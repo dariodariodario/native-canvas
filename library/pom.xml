@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>nativecanvas</groupId>
+        <artifactId>nativecanvas-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>nativecanvas</artifactId>
+    <name>Native Canvas Library</name>
+
+    <properties>
+        <native.skip>false</native.skip>
+        <native.build.type>Release</native.build.type>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <executable>cmake</executable>
+                    <skip>${native.skip}</skip>
+                    <environmentVariables>
+                        <JAVA_HOME>${java.home}</JAVA_HOME>
+                    </environmentVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>configure-native</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <arguments>
+                                <argument>-S</argument>
+                                <argument>${project.basedir}</argument>
+                                <argument>-B</argument>
+                                <argument>${project.build.directory}/native</argument>
+                                <argument>-DCMAKE_BUILD_TYPE=${native.build.type}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>build-native</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <arguments>
+                                <argument>--build</argument>
+                                <argument>${project.build.directory}/native</argument>
+                                <argument>--config</argument>
+                                <argument>${native.build.type}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
