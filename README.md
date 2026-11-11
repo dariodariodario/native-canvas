@@ -104,6 +104,32 @@ rasterizes on the CPU and SDL presents the texture. The portable CMake target
 uses JNI headers and pkg-config. Apple Silicon macOS is the current build and
 runtime target.
 
+### Gradients, clips, and transforms
+
+```java
+Canvas.Gradient gradient = Canvas.linearGradient(0, 0, 180, 0)
+        .addColorStop(0, 0x48e6c1ff)
+        .addColorStop(1, 0xbd5bffff);
+canvas.save();
+canvas.translate(20, 30);
+canvas.clipRect(0, 0, 180, 60);
+canvas.setFillStyle(gradient);
+canvas.fillRect(0, 0, 180, 60);
+canvas.restore();
+```
+
+Use `Canvas.radialGradient(x0, y0, r0, x1, y1, r1)` for a two-circle gradient.
+Fill and stroke styles accept both gradient types. Style assignment snapshots
+the stops, and coordinates follow the drawing transform. Use `clip()` to clip
+to the current path or `clipRect()` for a rectangle. Both intersect the
+existing clip and preserve the path. `save()` and `restore()` scope the clip,
+transform, and styles.
+
+**Native Canvas Demo** shows gradients, path and rectangle clipping, translation,
+rotation and scaling, geometry bounds, shaped text and ink bounds, and PNG
+image scaling and transparency. It adapts to window resize and can export the
+same drawing with `--png`.
+
 ## UI toolkit
 
 The `toolkit` module builds `nativecanvas:nativecanvas-toolkit` and depends on
@@ -194,3 +220,21 @@ area. Choose a color or cycle the stroke width with **Width**. **Undo**
 removes the last mark, **Clear** empties the drawing, and **Save PNG** writes
 `paint.png` in the working directory. The example replays its marks to
 export the drawing without the toolbar.
+
+### Resizable windows
+
+Use `new Canvas(title, width, height, true)` to enable resizing. Poll events
+before drawing. A `Canvas.InputEvent.RESIZE` reports the current logical
+size, and `Canvas.width()` and `Canvas.height()` work with either polling API.
+A backing-size change clears the backing pixels and resets Canvas drawing
+state, including its path and save stack. Redraw the scene after resizing.
+
+`Ui.poll(canvas)` relayouts the widget tree automatically on resize. Use
+`Ui.resize(width, height)` when supplying your own viewport size. The Toolkit
+Demo uses a grid with an `AUTO` heading and a `FILL` scroll pane.
+
+For live resize, register a drawing callback with
+`canvas.setLiveResizeRedraw(() -> { ui.resize(canvas.width(), canvas.height()); ui.draw(canvas); })`.
+Canvas updates its backing before the callback and presents afterward. Keep
+the callback to drawing and layout. The regular event loop continues to
+handle input and queued resize events.

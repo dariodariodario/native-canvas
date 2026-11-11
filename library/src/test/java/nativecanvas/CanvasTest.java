@@ -241,4 +241,113 @@ class CanvasTest {
         assertTrue(canvas.pollEvent(event));
         assertEquals(type, event.type());
     }
+    @Test void resizesWindowBackingThroughBothPollingApis() throws Exception {
+        try (Canvas canvas = new Canvas("Resize test", 64, 48, true)) {
+            assertEquals(64, canvas.width());
+            assertEquals(48, canvas.height());
+            canvas.setFillStyle(0xff0000ff);
+            canvas.fillRect(0, 0, 64, 48);
+            canvas.setWindowSize(96, 72);
+            Canvas.InputEvent event = new Canvas.InputEvent();
+            boolean resized = false;
+            while (canvas.pollEvent(event)) {
+                if (event.type() != Canvas.InputEvent.RESIZE) continue;
+                assertEquals(96, event.width());
+                assertEquals(72, event.height());
+                resized = true;
+            }
+            assertTrue(resized);
+            assertEquals(96, canvas.width());
+            assertEquals(72, canvas.height());
+            assertEquals(0, pixels(canvas).getRGB(5, 5));
+            canvas.fillRect(90, 66, 6, 6);
+            canvas.present();
+            BufferedImage larger = pixels(canvas);
+            assertEquals(96, larger.getWidth());
+            assertEquals(72, larger.getHeight());
+            assertEquals(0xff000000, larger.getRGB(95, 71));
+            canvas.setWindowSize(32, 24);
+            assertTrue(canvas.pollEvents());
+            assertEquals(32, canvas.width());
+            assertEquals(24, pixels(canvas).getHeight());
+        }
+    }
+    @Test void linearGradientSnapshotsStopsAndSurvivesSaveRestore() throws Exception {
+        Canvas.Gradient gradient = Canvas.linearGradient(0, 0, 20, 0)
+                .addColorStop(1, 0x0000ffff).addColorStop(0, 0xff0000ff);
+        try (Canvas canvas = Canvas.offscreen(20, 20)) {
+            canvas.setFillStyle(gradient);
+            gradient.addColorStop(0.5, 0x00ff00ff);
+            canvas.save();
+            canvas.setFillStyle(0xffffffff);
+            canvas.fillRect(0, 0, 20, 4);
+            canvas.restore();
+            canvas.fillRect(0, 4, 20, 8);
+            canvas.setStrokeStyle(gradient);
+            canvas.setLineWidth(2);
+            canvas.strokeRect(2, 14, 16, 4);
+            BufferedImage image = pixels(canvas);
+            assertEquals(0xffffffff, image.getRGB(10, 1));
+            assertEquals(0, (image.getRGB(10, 6) >>> 8) & 255);
+            assertTrue((image.getRGB(1, 6) & 255) < (image.getRGB(18, 6) & 255));
+            assertTrue(((image.getRGB(10, 14) >>> 8) & 255) > 220);
+        }
+    }
+
+    @Test void radialFillAndStrokeFollowTransformsAndClipping() throws Exception {
+        Canvas.Gradient gradient = Canvas.radialGradient(0, 0, 1, 0, 0, 10)
+                .addColorStop(0, 0xffffffff).addColorStop(1, 0xffffff00);
+        try (Canvas canvas = Canvas.offscreen(40, 30)) {
+            canvas.translate(20, 15);
+            canvas.scale(2, 1);
+            canvas.clipRect(-5, -10, 15, 20);
+            canvas.setFillStyle(gradient);
+            canvas.fillRect(-10, -10, 20, 10);
+            canvas.setStrokeStyle(gradient);
+            canvas.setLineWidth(2);
+            canvas.strokeRect(-10, 3, 20, 6);
+            BufferedImage image = pixels(canvas);
+            assertEquals(255, image.getRGB(20, 14) >>> 24);
+            assertTrue((image.getRGB(35, 14) >>> 24) < 100);
+            assertEquals(0, image.getRGB(9, 14));
+            assertTrue((image.getRGB(20, 18) >>> 24) > (image.getRGB(36, 18) >>> 24));
+        }
+    }
+
+    @Test void gradientValidatesArgumentsAndEmptyGradientIsTransparent() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> Canvas.linearGradient(0, 0, Double.NaN, 1));
+        assertThrows(IllegalArgumentException.class, () -> Canvas.radialGradient(0, 0, -1, 0, 0, 2));
+        Canvas.Gradient empty = Canvas.linearGradient(0, 0, 5, 5);
+        assertThrows(IllegalArgumentException.class, () -> empty.addColorStop(1.1, 0));
+        assertThrows(IllegalArgumentException.class, () -> empty.addColorStop(Double.NaN, 0));
+        try (Canvas canvas = Canvas.offscreen(5, 5)) {
+            canvas.setFillStyle(empty);
+            canvas.fillRect(0, 0, 5, 5);
+            assertEquals(0, pixels(canvas).getRGB(2, 2));
+        }
+    }
+    private static native void exposeDuringResize();
+
+    @Test void redrawsDuringExposeBeforePollingAndCanRemoveCallback() throws Exception {
+        System.loadLibrary("nativecanvas_test");
+        try (Canvas canvas = new Canvas("Live resize", 64, 48, true)) {
+            int[] calls = {0};
+            canvas.setLiveResizeRedraw(() -> {
+                calls[0]++;
+                assertEquals(96, canvas.width());
+                assertEquals(72, canvas.height());
+                assertThrows(IllegalStateException.class, canvas::pollEvents);
+                canvas.setFillStyle(0x123456ff);
+                canvas.fillRect(0, 0, canvas.width(), canvas.height());
+            });
+            canvas.setWindowSize(96, 72);
+            int before = calls[0];
+            exposeDuringResize();
+            assertEquals(before + 1, calls[0]);
+            assertEquals(0xff123456, pixels(canvas).getRGB(95, 71));
+            canvas.setLiveResizeRedraw(null);
+            exposeDuringResize();
+            assertEquals(before + 1, calls[0]);
+        }
+    }
 }

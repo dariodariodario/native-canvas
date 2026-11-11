@@ -5,7 +5,7 @@ public final class ToolkitDemo {
     public static void main(String[] args) throws InterruptedException {
         boolean png = args.length > 0 && "--png".equals(args[0]);
         boolean smoke = args.length > 0 && "--smoke".equals(args[0]);
-        try (Canvas canvas = png ? Canvas.offscreen(420, 360) : new Canvas("Native Canvas UI", 420, 360)) {
+        try (Canvas canvas = png ? Canvas.offscreen(420, 360) : new Canvas("Native Canvas UI", 420, 360, true)) {
             Label status = new Label("Ready").setFont("Sans Bold", 18).setColor(0x7acffaff);
             Column options = new Column(0, 8);
             int[] clicks = {0};
@@ -26,13 +26,19 @@ public final class ToolkitDemo {
                         checked -> status.setText(name + (checked ? " enabled" : " disabled"))));
             }
             options.add(preferences);
-            Column root = new Column(16, 8).add(status).add(new ScrollPane(options, 294));
-            Ui ui = new Ui(root, 420, 360);
+            Grid root = new Grid(new Track[]{Track.FILL}, new Track[]{Track.AUTO, Track.FILL}, 16, 8, 8)
+                    .add(0, 0, status)
+                    .add(1, 0, new ScrollPane(options, 1));
+            Ui ui = new Ui(root, canvas.width(), canvas.height());
             if (png) {
                 ui.draw(canvas);
                 canvas.writePng(args.length > 1 ? args[1] : "toolkit.png");
                 return;
             }
+            canvas.setLiveResizeRedraw(() -> {
+                ui.resize(canvas.width(), canvas.height());
+                ui.draw(canvas);
+            });
             do {
                 if (!ui.poll(canvas)) break;
                 ui.draw(canvas);

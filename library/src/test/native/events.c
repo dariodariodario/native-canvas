@@ -51,3 +51,18 @@ JNIEXPORT void JNICALL Java_nativecanvas_ui_TextFieldTest_enqueueText(JNIEnv *en
     };
     push_events(env, events, sizeof(events) / sizeof(events[0]));
 }
+
+JNIEXPORT void JNICALL Java_nativecanvas_CanvasTest_exposeDuringResize(JNIEnv *env, jclass type) {
+    int count;
+    SDL_Window **windows = SDL_GetWindows(&count);
+    if (!windows || count != 1) {
+        SDL_free(windows);
+        jclass error = (*env)->FindClass(env, "java/lang/AssertionError");
+        if (error) (*env)->ThrowNew(env, error, "Expected one SDL window");
+        return;
+    }
+    SDL_Event event = {.window = {.type = SDL_EVENT_WINDOW_EXPOSED,
+                                 .windowID = SDL_GetWindowID(windows[0]), .data1 = 1}};
+    SDL_free(windows);
+    push_events(env, &event, 1);
+}

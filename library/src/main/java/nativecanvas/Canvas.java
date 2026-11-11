@@ -3,7 +3,9 @@ package nativecanvas;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /** Canvas-style drawing into a persistent backing store. Use on the window thread. */
@@ -15,18 +17,77 @@ public final class Canvas implements AutoCloseable {
             .order(ByteOrder.nativeOrder());
     private final Set<Image> images = new HashSet<>();
     private long handle;
+    private int width, height;
+    private Runnable liveResizeRedraw;
+    private boolean redrawingDuringResize;
 
     public Canvas(String title, int width, int height) {
-        this(utf8(title), width, height);
+        this(title, width, height, false);
+    }
+
+    /** Opens a window with optional user resizing. */
+    public Canvas(String title, int width, int height, boolean resizable) {
+        this(utf8(title), width, height, resizable);
     }
 
     public static Canvas offscreen(int width, int height) {
-        return new Canvas((byte[]) null, width, height);
+        return new Canvas((byte[]) null, width, height, false);
     }
 
-    private Canvas(byte[] title, int width, int height) {
+    private Canvas(byte[] title, int width, int height, boolean resizable) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid canvas size");
-        handle = open(title, width, height);
+        handle = open(title, width, height, resizable);
+        updateSize(logicalSize(handle));
+    }
+
+    /** Current logical width, updated while polling window events. */
+    public int width() { return width; }
+
+    /** Current logical height, updated while polling window events. */
+    public int height() { return height; }
+
+    /** Requests a new logical window size. Poll events to apply it to the backing store. */
+    public void setWindowSize(int width, int height) {
+        checkOutsideResize();
+        checkOpen();
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid canvas size");
+        requestWindowSize(handle, width, height);
+    }
+
+    /**
+     * Registers a drawing callback for live resize. Canvas resizes and presents around it.
+     * Pass null to remove it. The callback must only draw, without polling or closing.
+     */
+    public void setLiveResizeRedraw(Runnable redraw) {
+        checkOpen();
+        checkOutsideResize();
+        watchResize(handle, redraw == null ? null : this);
+        liveResizeRedraw = redraw;
+    }
+
+    private void redrawDuringResize() {
+        redrawingDuringResize = true;
+        try {
+            applyResize();
+            liveResizeRedraw.run();
+            present();
+        } finally {
+            redrawingDuringResize = false;
+        }
+    }
+
+    private void checkOutsideResize() {
+        if (redrawingDuringResize) throw new IllegalStateException("Operation during live resize redraw");
+    }
+
+    private void updateSize(long size) {
+        width = (int) (size >>> 32);
+        height = (int) size;
+    }
+
+    private void applyResize() {
+        flush();
+        updateSize(resizeBacking(handle));
     }
 
     private static byte[] utf8(String value) {
@@ -62,6 +123,63 @@ public final class Canvas implements AutoCloseable {
     /** Colors use 0xRRGGBBAA. */
     public void setFillStyle(int rgba) { command(1, 4); commands.putInt(rgba); }
     public void setStrokeStyle(int rgba) { command(2, 4); commands.putInt(rgba); }
+    public static Gradient linearGradient(double x0, double y0, double x1, double y1) {
+        return new Gradient(false, x0, y0, x1, y1);
+    }
+
+    public static Gradient radialGradient(double x0, double y0, double r0,
+                                          double x1, double y1, double r1) {
+        if (r0 < 0 || r1 < 0) throw new IllegalArgumentException("Negative gradient radius");
+        return new Gradient(true, x0, y0, r0, x1, y1, r1);
+    }
+
+    public static final class Gradient {
+        private final boolean radial;
+        private final double[] coordinates;
+        private final List<Stop> stops = new ArrayList<>();
+
+        private Gradient(boolean radial, double... coordinates) {
+            for (double coordinate : coordinates)
+                if (!Double.isFinite(coordinate)) throw new IllegalArgumentException("Invalid gradient coordinate");
+            this.radial = radial;
+            this.coordinates = coordinates;
+        }
+
+        /** Adds a stop with an offset from 0 to 1 and a color in 0xRRGGBBAA. */
+        public Gradient addColorStop(double offset, int rgba) {
+            if (!(offset >= 0 && offset <= 1)) throw new IllegalArgumentException("Invalid stop offset");
+            stops.add(new Stop(offset, rgba));
+            return this;
+        }
+    }
+
+    private static final class Stop {
+        final double offset;
+        final int rgba;
+
+        Stop(double offset, int rgba) {
+            this.offset = offset;
+            this.rgba = rgba;
+        }
+    }
+
+    /** Snapshots the gradient stops. Coordinates are interpreted in drawing user space. */
+    public void setFillStyle(Gradient gradient) { gradientStyle(gradient, false); }
+
+    /** Snapshots the gradient stops. Coordinates are interpreted in drawing user space. */
+    public void setStrokeStyle(Gradient gradient) { gradientStyle(gradient, true); }
+
+    private void gradientStyle(Gradient gradient, boolean stroke) {
+        int header = 4 + 8 * gradient.coordinates.length;
+        int count = gradient.stops.size();
+        if (count > (commands.capacity() - 1 - header) / 12)
+            throw new IllegalArgumentException("Too many gradient stops");
+        command(25 + (gradient.radial ? 2 : 0) + (stroke ? 1 : 0), header + count * 12);
+        for (double coordinate : gradient.coordinates) commands.putDouble(coordinate);
+        commands.putInt(count);
+        for (Stop stop : gradient.stops) commands.putDouble(stop.offset).putInt(stop.rgba);
+    }
+
     public void fillRect(double x, double y, double w, double h) { box(3, x, y, w, h); }
     public void strokeRect(double x, double y, double w, double h) { box(4, x, y, w, h); }
     public void clearRect(double x, double y, double w, double h) { box(5, x, y, w, h); }
@@ -234,14 +352,22 @@ public final class Canvas implements AutoCloseable {
 
     /** Returns false after the user requests that the window close. */
     public boolean pollEvents() {
+        checkOutsideResize();
         checkOpen();
-        return poll(handle);
+        int flags = poll(handle);
+        if ((flags & 2) != 0) applyResize();
+        return (flags & 1) != 0;
     }
 
     /** Reads the next supported SDL event into a caller-owned, reusable object. */
     public boolean pollEvent(InputEvent event) {
+        checkOutsideResize();
         checkOpen();
         event.type = nextEvent(handle, event.data);
+        if (event.type == InputEvent.RESIZE) {
+            applyResize();
+            event.data.putInt(0, width).putInt(4, height);
+        }
         event.text = event.type == InputEvent.TEXT_INPUT
                 ? new String(inputText(handle), StandardCharsets.UTF_8) : "";
         return event.type != 0;
@@ -262,12 +388,16 @@ public final class Canvas implements AutoCloseable {
         public static final int POINTER_UP = 6;
         public static final int SCROLL = 7;
         public static final int TEXT_INPUT = 8;
+        /** Logical or backing-pixel size changed. Redraw the canvas after this event. */
+        public static final int RESIZE = 9;
 
         private final ByteBuffer data = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
         private int type;
         private String text = "";
 
         public String text() { return text; }
+        public int width() { return data.getInt(0); }
+        public int height() { return data.getInt(4); }
 
         public int type() { return type; }
         /** SDL virtual key code. */
@@ -287,6 +417,7 @@ public final class Canvas implements AutoCloseable {
     }
 
     @Override public void close() {
+        checkOutsideResize();
         checkThread();
         if (handle != 0) {
             for (Image image : images) image.releaseImage();
@@ -296,10 +427,14 @@ public final class Canvas implements AutoCloseable {
         }
     }
 
-    private static native long open(byte[] title, int width, int height);
+    private static native long open(byte[] title, int width, int height, boolean resizable);
+    private static native long logicalSize(long handle);
+    private static native long resizeBacking(long handle);
+    private static native void watchResize(long handle, Canvas canvas);
+    private static native void requestWindowSize(long handle, int width, int height);
     private static native void draw(long handle, ByteBuffer commands, int length);
     private static native void show(long handle);
-    private static native boolean poll(long handle);
+    private static native int poll(long handle);
     private static native byte[] inputText(long handle);
     private static native void textInputEnabled(long handle, boolean enabled);
     private static native int nextEvent(long handle, ByteBuffer event);

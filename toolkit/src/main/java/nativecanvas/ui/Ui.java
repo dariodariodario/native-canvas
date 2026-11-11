@@ -11,6 +11,7 @@ public final class Ui {
     private final Canvas.InputEvent event = new Canvas.InputEvent();
     private Control focused, hovered, pressed;
     private boolean textInputEnabled;
+    private double pointerX = -1, pointerY = -1;
 
     public Ui(Widget root, int width, int height) {
         this.root = Objects.requireNonNull(root);
@@ -20,7 +21,14 @@ public final class Ui {
         root.uiRoot = true;
     }
 
-    public void layout() { root.layout(0, 0, root.width(), root.height()); }
+    public void layout() { resize((int) root.width(), (int) root.height()); }
+
+    /** Relayouts the tree for a new logical viewport size. */
+    public void resize(int width, int height) {
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid viewport");
+        root.layout(0, 0, width, height);
+        pointerMoved(pointerX, pointerY);
+    }
 
     public Control focusedControl() { return focused; }
 
@@ -48,6 +56,8 @@ public final class Ui {
     }
 
     public void pointerMoved(double x, double y) {
+        pointerX = x;
+        pointerY = y;
         if (hovered != null) hovered.hovered = false;
         Widget hit = root.hit(x, y);
         hovered = hit instanceof Control ? (Control) hit : null;
@@ -100,6 +110,9 @@ public final class Ui {
                 case Canvas.InputEvent.CLOSE:
                     syncTextInput(canvas, false);
                     return false;
+                case Canvas.InputEvent.RESIZE:
+                    resize(event.width(), event.height());
+                    break;
                 case Canvas.InputEvent.TEXT_INPUT:
                     if (focused instanceof TextField) ((TextField) focused).insert(event.text());
                     break;

@@ -11,6 +11,7 @@
 
 typedef struct Style {
     uint32_t fill, stroke;
+    cairo_pattern_t *fill_pattern, *stroke_pattern;
     PangoFontDescription *font;
     struct Style *previous;
 } Style;
@@ -24,8 +25,13 @@ typedef struct {
     PangoLayout *layout;
     Style style;
     int width, height;
-    bool quit;
+    int logical_width, logical_height;
+    bool quit, resize_pending;
     char *input_text;
+    JavaVM *vm;
+    jobject redraw_canvas;
+    jmethodID redraw_method;
+    bool redrawing;
 } Canvas;
 
 static Canvas *window_canvas;
@@ -47,20 +53,51 @@ static char *string(JNIEnv *env, jbyteArray bytes) {
     return result;
 }
 
-static void release(Canvas *c) {
-    if (!c) return;
-    g_free(c->input_text);
+static void release_style(Style *style) {
+    if (style->font) pango_font_description_free(style->font);
+    if (style->fill_pattern) cairo_pattern_destroy(style->fill_pattern);
+    if (style->stroke_pattern) cairo_pattern_destroy(style->stroke_pattern);
+}
+
+static void release_backing(Canvas *c) {
     if (c->layout) g_object_unref(c->layout);
-    if (c->style.font) pango_font_description_free(c->style.font);
+    release_style(&c->style);
     while (c->style.previous) {
         Style *saved = c->style.previous;
         c->style.previous = saved->previous;
-        pango_font_description_free(saved->font);
+        release_style(saved);
         free(saved);
     }
     if (c->cr) cairo_destroy(c->cr);
     if (c->surface) cairo_surface_destroy(c->surface);
     if (c->texture) SDL_DestroyTexture(c->texture);
+}
+
+static bool SDLCALL watch_live_resize(void *userdata, SDL_Event *event) {
+    if (event->type != SDL_EVENT_WINDOW_EXPOSED || event->window.data1 != 1
+            || !SDL_IsMainThread()) return true;
+    Canvas *c = userdata;
+    if (c->redrawing || event->window.windowID != SDL_GetWindowID(c->window)) return true;
+    JNIEnv *env;
+    if ((*c->vm)->GetEnv(c->vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK
+            || (*env)->ExceptionCheck(env)) return true;
+    c->redrawing = true;
+    (*env)->CallVoidMethod(env, c->redraw_canvas, c->redraw_method);
+    c->redrawing = false;
+    return true;
+}
+
+static void remove_resize_watch(JNIEnv *env, Canvas *c) {
+    if (!c->redraw_canvas) return;
+    SDL_RemoveEventWatch(watch_live_resize, c);
+    (*env)->DeleteGlobalRef(env, c->redraw_canvas);
+    c->redraw_canvas = NULL;
+}
+
+static void release(Canvas *c) {
+    if (!c) return;
+    g_free(c->input_text);
+    release_backing(c);
     if (c->renderer) SDL_DestroyRenderer(c->renderer);
     if (c->window) SDL_DestroyWindow(c->window);
     if (c == window_canvas) {
@@ -70,12 +107,40 @@ static void release(Canvas *c) {
     free(c);
 }
 
+static bool create_backing(JNIEnv *env, Canvas *c, int width, int height) {
+    c->logical_width = c->width = width;
+    c->logical_height = c->height = height;
+    if (c->window) {
+        if (!SDL_GetWindowSizeInPixels(c->window, &c->width, &c->height)) {
+            fail(env, SDL_GetError());
+            return false;
+        }
+        c->texture = SDL_CreateTexture(c->renderer, SDL_PIXELFORMAT_ARGB8888,
+                                      SDL_TEXTUREACCESS_STREAMING, c->width, c->height);
+        if (!c->texture || !SDL_SetTextureBlendMode(c->texture, SDL_BLENDMODE_NONE)) {
+            fail(env, SDL_GetError());
+            return false;
+        }
+    }
+    c->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, c->width, c->height);
+    cairo_surface_set_device_scale(c->surface, (double)c->width / width, (double)c->height / height);
+    c->cr = cairo_create(c->surface);
+    cairo_status_t status = cairo_status(c->cr);
+    if (status != CAIRO_STATUS_SUCCESS) {
+        fail(env, cairo_status_to_string(status));
+        return false;
+    }
+    c->style.fill = c->style.stroke = 0x000000ff;
+    c->style.font = pango_font_description_from_string("Sans 10px");
+    c->layout = pango_cairo_create_layout(c->cr);
+    cairo_set_line_width(c->cr, 1);
+    return true;
+}
+
 JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_open
-  (JNIEnv *env, jclass type, jbyteArray title, jint width, jint height) {
+  (JNIEnv *env, jclass type, jbyteArray title, jint width, jint height, jboolean resizable) {
     Canvas *c = calloc(1, sizeof(*c));
     if (!c) { fail(env, "Cannot allocate canvas"); return 0; }
-    c->width = width;
-    c->height = height;
     if (title) {
         if (!SDL_IsMainThread() || window_canvas) {
             fail(env, "Open one SDL window on the main thread (use -XstartOnFirstThread on macOS)");
@@ -86,29 +151,15 @@ JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_open
         window_canvas = c;
         char *name = string(env, title);
         if (!name) goto error;
-        c->window = SDL_CreateWindow(name, width, height, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        if (resizable) flags |= SDL_WINDOW_RESIZABLE;
+        c->window = SDL_CreateWindow(name, width, height, flags);
         free(name);
         if (!c->window) goto sdl_error;
         c->renderer = SDL_CreateRenderer(c->window, NULL);
-        if (!c->renderer || !SDL_GetWindowSizeInPixels(c->window, &c->width, &c->height))
-            goto sdl_error;
-        c->texture = SDL_CreateTexture(c->renderer, SDL_PIXELFORMAT_ARGB8888,
-                                      SDL_TEXTUREACCESS_STREAMING, c->width, c->height);
-        if (!c->texture || !SDL_SetTextureBlendMode(c->texture, SDL_BLENDMODE_NONE))
-            goto sdl_error;
+        if (!c->renderer || !SDL_GetWindowSize(c->window, &width, &height)) goto sdl_error;
     }
-    c->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, c->width, c->height);
-    cairo_surface_set_device_scale(c->surface, (double)c->width / width, (double)c->height / height);
-    c->cr = cairo_create(c->surface);
-    cairo_status_t status = cairo_status(c->cr);
-    if (status != CAIRO_STATUS_SUCCESS) {
-        fail(env, cairo_status_to_string(status));
-        goto error;
-    }
-    c->style.fill = c->style.stroke = 0x000000ff;
-    c->style.font = pango_font_description_from_string("Sans 10px");
-    c->layout = pango_cairo_create_layout(c->cr);
-    cairo_set_line_width(c->cr, 1);
+    if (!create_backing(env, c, width, height)) goto error;
     return (jlong)(intptr_t)c;
 
 sdl_error:
@@ -137,6 +188,18 @@ static void color(cairo_t *cr, uint32_t rgba) {
                          ((rgba >> 8) & 255) / 255.0, (rgba & 255) / 255.0);
 }
 
+static void source(Canvas *c, bool stroke) {
+    cairo_pattern_t *pattern = stroke ? c->style.stroke_pattern : c->style.fill_pattern;
+    if (pattern) cairo_set_source(c->cr, pattern);
+    else color(c->cr, stroke ? c->style.stroke : c->style.fill);
+}
+
+static void replace_pattern(Style *style, bool stroke, cairo_pattern_t *pattern) {
+    cairo_pattern_t **slot = stroke ? &style->stroke_pattern : &style->fill_pattern;
+    if (*slot) cairo_pattern_destroy(*slot);
+    *slot = pattern;
+}
+
 static void rect(Canvas *c, int op, const double *v) {
     cairo_t *cr = c->cr;
     if (op == 18) {
@@ -154,10 +217,10 @@ static void rect(Canvas *c, int op, const double *v) {
     } else if (op == 24) {
         cairo_clip(cr);
     } else if (op == 4) {
-        color(cr, c->style.stroke);
+        source(c, true);
         cairo_stroke(cr);
     } else {
-        color(cr, c->style.fill);
+        source(c, false);
         cairo_fill(cr);
     }
     cairo_append_path(cr, path);
@@ -181,7 +244,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
     }
     const unsigned char *end = p + length;
     static const unsigned char arity[] = {
-        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4
+        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4, 4, 4, 6, 6
     };
     while (p < end) {
         unsigned op = *p++;
@@ -216,20 +279,22 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
         }
         if (!finite) continue;
         switch (op) {
-            case 1: c->style.fill = rgba; break;
-            case 2: c->style.stroke = rgba; break;
+            case 1: replace_pattern(&c->style, false, NULL); c->style.fill = rgba; break;
+            case 2: replace_pattern(&c->style, true, NULL); c->style.stroke = rgba; break;
             case 3: case 4: case 5: case 18: case 24: rect(c, op, v); break;
             case 6: cairo_new_path(cr); break;
             case 7: cairo_move_to(cr, v[0], v[1]); break;
             case 8: cairo_line_to(cr, v[0], v[1]); break;
             case 9: cairo_close_path(cr); break;
-            case 10: color(cr, c->style.fill); cairo_fill_preserve(cr); break;
-            case 11: color(cr, c->style.stroke); cairo_stroke_preserve(cr); break;
+            case 10: source(c, false); cairo_fill_preserve(cr); break;
+            case 11: source(c, true); cairo_stroke_preserve(cr); break;
             case 12: {
                 Style *saved = malloc(sizeof(*saved));
                 if (!saved) { fail(env, "Cannot save drawing state"); return; }
                 *saved = c->style;
                 c->style.font = pango_font_description_copy(saved->font);
+                if (c->style.fill_pattern) cairo_pattern_reference(c->style.fill_pattern);
+                if (c->style.stroke_pattern) cairo_pattern_reference(c->style.stroke_pattern);
                 c->style.previous = saved;
                 cairo_save(cr);
                 break;
@@ -237,7 +302,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
             case 13: {
                 Style *saved = c->style.previous;
                 if (saved) {
-                    pango_font_description_free(c->style.font);
+                    release_style(&c->style);
                     c->style = *saved;
                     free(saved);
                     cairo_restore(cr);
@@ -258,7 +323,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
                 break;
             }
             case 22: {
-                color(cr, c->style.fill);
+                source(c, false);
                 layout_text(c, value, (int)size);
                 cairo_path_t *path = cairo_copy_path(cr);
                 cairo_new_path(cr);
@@ -267,6 +332,30 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
                 cairo_new_path(cr);
                 cairo_append_path(cr, path);
                 cairo_path_destroy(path);
+                break;
+            }
+            case 25: case 26: case 27: case 28: {
+                if (end - p < 4) goto malformed;
+                uint32_t count = read_uint(&p);
+                if (count > (size_t)(end - p) / 12) goto malformed;
+                cairo_pattern_t *pattern;
+                if (count == 0) pattern = cairo_pattern_create_rgba(0, 0, 0, 0);
+                else if (op < 27) pattern = cairo_pattern_create_linear(v[0], v[1], v[2], v[3]);
+                else pattern = cairo_pattern_create_radial(v[0], v[1], v[2], v[3], v[4], v[5]);
+                cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
+                for (uint32_t i = 0; i < count; i++) {
+                    double offset = read_double(&p);
+                    uint32_t stop = read_uint(&p);
+                    cairo_pattern_add_color_stop_rgba(pattern, offset, (stop >> 24) / 255.0,
+                        ((stop >> 16) & 255) / 255.0, ((stop >> 8) & 255) / 255.0, (stop & 255) / 255.0);
+                }
+                cairo_status_t status = cairo_pattern_status(pattern);
+                if (status != CAIRO_STATUS_SUCCESS) {
+                    cairo_pattern_destroy(pattern);
+                    fail(env, cairo_status_to_string(status));
+                    return;
+                }
+                replace_pattern(&c->style, op == 26 || op == 28, pattern);
                 break;
             }
             case 23: {
@@ -303,11 +392,66 @@ malformed:
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_show(JNIEnv *env, jclass type, jlong handle) {
     Canvas *c = (Canvas *)(intptr_t)handle;
     if (!c->window) { fail(env, "Canvas has no window"); return; }
+    int width, height;
+    if (!SDL_GetCurrentRenderOutputSize(c->renderer, &width, &height)) {
+        fail(env, SDL_GetError());
+        return;
+    }
+    SDL_FRect destination = {0, 0, (float)c->width, (float)c->height};
+    bool size_mismatch = width != c->width || height != c->height;
     cairo_surface_flush(c->surface);
-    if (!SDL_UpdateTexture(c->texture, NULL, cairo_image_surface_get_data(c->surface),
+    if ((size_mismatch && !SDL_RenderClear(c->renderer)) || !SDL_UpdateTexture(c->texture, NULL, cairo_image_surface_get_data(c->surface),
                            cairo_image_surface_get_stride(c->surface)) ||
-        !SDL_RenderTexture(c->renderer, c->texture, NULL, NULL) ||
+        !SDL_RenderTexture(c->renderer, c->texture, NULL, &destination) ||
         !SDL_RenderPresent(c->renderer)) fail(env, SDL_GetError());
+}
+
+static jlong logical_size(const Canvas *c) {
+    return ((jlong)c->logical_width << 32) | (uint32_t)c->logical_height;
+}
+
+JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_logicalSize
+  (JNIEnv *env, jclass type, jlong handle) {
+    return logical_size((Canvas *)(intptr_t)handle);
+}
+
+JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_resizeBacking
+  (JNIEnv *env, jclass type, jlong handle) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    int width, height, pixels_w, pixels_h;
+    if (!SDL_GetWindowSize(c->window, &width, &height)
+            || !SDL_GetWindowSizeInPixels(c->window, &pixels_w, &pixels_h)) {
+        fail(env, SDL_GetError());
+        return 0;
+    }
+    if (width <= 0 || height <= 0 || pixels_w <= 0 || pixels_h <= 0)
+        return logical_size(c);
+    if (width == c->logical_width && height == c->logical_height
+            && pixels_w == c->width && pixels_h == c->height)
+        return logical_size(c);
+    Canvas next = {.window = c->window, .renderer = c->renderer};
+    if (!create_backing(env, &next, width, height)) {
+        release_backing(&next);
+        return 0;
+    }
+    release_backing(c);
+    c->logical_width = next.logical_width;
+    c->logical_height = next.logical_height;
+    c->width = next.width;
+    c->height = next.height;
+    c->texture = next.texture;
+    c->surface = next.surface;
+    c->cr = next.cr;
+    c->layout = next.layout;
+    c->style = next.style;
+    return logical_size(c);
+}
+
+JNIEXPORT void JNICALL Java_nativecanvas_Canvas_requestWindowSize
+  (JNIEnv *env, jclass type, jlong handle, jint width, jint height) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    if (!c->window) { fail(env, "Canvas has no window"); return; }
+    if (!SDL_SetWindowSize(c->window, width, height)) fail(env, SDL_GetError());
 }
 
 static int next_event(Canvas *c, void *output) {
@@ -330,6 +474,11 @@ static int next_event(Canvas *c, void *output) {
                 fields[1] = event.key.scancode;
                 fields[2] = event.key.mod;
                 fields[3] = event.key.repeat;
+                break;
+            case SDL_EVENT_WINDOW_RESIZED:
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                if (!output) c->resize_pending = true;
+                type = 9;
                 break;
             case SDL_EVENT_TEXT_INPUT:
                 if (!output) continue;
@@ -372,11 +521,13 @@ static int next_event(Canvas *c, void *output) {
     return 0;
 }
 
-JNIEXPORT jboolean JNICALL Java_nativecanvas_Canvas_poll(JNIEnv *env, jclass type, jlong handle) {
+JNIEXPORT jint JNICALL Java_nativecanvas_Canvas_poll(JNIEnv *env, jclass type, jlong handle) {
     Canvas *c = (Canvas *)(intptr_t)handle;
     if (!c->window) { fail(env, "Canvas has no window"); return JNI_FALSE; }
     next_event(c, NULL);
-    return !c->quit;
+    int flags = (c->quit ? 0 : 1) | (c->resize_pending ? 2 : 0);
+    c->resize_pending = false;
+    return flags;
 }
 
 JNIEXPORT jint JNICALL Java_nativecanvas_Canvas_nextEvent
@@ -408,8 +559,32 @@ JNIEXPORT jbyteArray JNICALL Java_nativecanvas_Canvas_inputText
     return bytes;
 }
 
+JNIEXPORT void JNICALL Java_nativecanvas_Canvas_watchResize
+  (JNIEnv *env, jclass type, jlong handle, jobject canvas) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    if (!c->window) { fail(env, "Canvas has no window"); return; }
+    remove_resize_watch(env, c);
+    if (!canvas) return;
+    jclass canvas_class = (*env)->GetObjectClass(env, canvas);
+    c->redraw_method = (*env)->GetMethodID(env, canvas_class, "redrawDuringResize", "()V");
+    if (!c->redraw_method) return;
+    if ((*env)->GetJavaVM(env, &c->vm) != JNI_OK) {
+        fail(env, "Cannot find the Java VM for resize callbacks");
+        return;
+    }
+    c->redraw_canvas = (*env)->NewGlobalRef(env, canvas);
+    if (!c->redraw_canvas) return;
+    if (!SDL_AddEventWatch(watch_live_resize, c)) {
+        (*env)->DeleteGlobalRef(env, c->redraw_canvas);
+        c->redraw_canvas = NULL;
+        fail(env, SDL_GetError());
+    }
+}
+
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_destroy(JNIEnv *env, jclass type, jlong handle) {
-    release((Canvas *)(intptr_t)handle);
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    remove_resize_watch(env, c);
+    release(c);
 }
 
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_png

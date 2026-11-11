@@ -172,4 +172,29 @@ class UiTest {
         ui.pointerDragged(10, 10);
         assertEquals(Arrays.asList("down 2.0 4.0", "drag 102.0 72.0", "up 112.0 82.0"), events);
     }
+    @Test void relayoutsFillTracksAndClampsScrollOnWindowResize() {
+        assumeFalse(Boolean.getBoolean("native.skip"));
+        int[] clicks = {0};
+        Button button = new Button("Last", () -> clicks[0]++);
+        Column content = new Column(0, 0).add(new Label("One")).add(new Label("Two")).add(button);
+        ScrollPane pane = new ScrollPane(content, 1);
+        Grid root = new Grid(new Track[]{Track.FILL}, new Track[]{Track.AUTO, Track.FILL}, 4, 0, 4)
+                .add(0, 0, new Label("Header")).add(1, 0, pane);
+        try (Canvas canvas = new Canvas("Resize toolkit", 140, 80, true)) {
+            Ui ui = new Ui(root, canvas.width(), canvas.height());
+            ui.scroll(15, 50, 1000);
+            assertTrue(pane.scrollPosition() > 0);
+            assertEquals(42, pane.height());
+            canvas.setWindowSize(240, 160);
+            assertTrue(ui.poll(canvas));
+            assertEquals(232, pane.width());
+            assertEquals(122, pane.height());
+            assertEquals(0, pane.scrollPosition());
+            ui.pointerPressed(200, 100);
+            ui.pointerReleased(200, 100);
+            assertEquals(1, clicks[0]);
+            ui.draw(canvas);
+            canvas.present();
+        }
+    }
 }
