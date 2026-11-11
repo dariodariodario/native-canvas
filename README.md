@@ -259,7 +259,7 @@ window resize. To export a still at a specific animation time in seconds:
 
 ```sh
 java -Djava.library.path=library/target/native \
-  -cp examples/target/classes:library/target/classes \
+  -cp examples/target/classes:toolkit/target/classes:library/target/classes \
   AuroraDemo --png examples/target/aurora.png 4
 ```
 
@@ -268,11 +268,56 @@ java -Djava.library.path=library/target/native \
 Select **Native Canvas Paradox** in IntelliJ after running `mvn package`.
 The demo projects a rotating 3D torus knot into Canvas paths, with 36 twisting
 strands and 7,200 flowing particles, eight inclined orbital bands, 24 rotating
-satellites, and a deforming 22-layer energy core. Move the mouse to orbit, scroll to zoom,
-and click to toggle a surge. Press Escape to exit.
+satellites, and a deforming 22-layer energy core. Drag the scene to orbit. The toolkit sidebar controls particle count, speed,
+zoom, surge, edge quality, and pause. Reset restores the defaults.
 
 ```sh
 java -Djava.library.path=library/target/native \
-  -cp examples/target/classes:library/target/classes \
+  -cp examples/target/classes:toolkit/target/classes:library/target/classes \
   ParadoxDemo --png examples/target/paradox.png 3.8
 ```
+
+### Paradox performance
+
+Paradox uses `Canvas.Antialias.FAST` for its geometry. Use **Fast edge rendering** in the sidebar to toggle
+Cairo's default edge quality. The fast mode trades some edge smoothness for
+lower rasterization cost. Canvas itself defaults to `Antialias.DEFAULT`.
+The setting participates in `save()` and `restore()`.
+
+Measure the actual scene offscreen at 1280×800, with 30 warm-up frames and
+100 measured frames:
+
+```sh
+java -Djava.library.path=library/target/native   -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark default
+java -Djava.library.path=library/target/native   -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark fast
+```
+
+These timings include Java scene generation, command submission, and Cairo
+rasterization. Window texture upload and presentation are outside this measurement.
+
+### City of Light
+
+Select **Native Canvas City** in IntelliJ. The procedural flight passes
+hundreds of illuminated buildings with rooftop equipment, moving traffic,
+facade gradients, and distance haze. The toolkit panel adjusts altitude,
+flight speed, radial lens distortion, and pause.
+
+The projection includes camera yaw, pitch, and roll, near-plane clipping,
+and subdivided polygon edges for curved lens distortion. Scene geometry is
+drawn with the existing Canvas API. Faces use painter-order depth sorting.
+
+```sh
+java -Djava.library.path=library/target/native \
+  -cp examples/target/classes:toolkit/target/classes:library/target/classes \
+  CityDemo --png examples/target/city.png 6
+```
+
+### Acceleration
+
+SDL automatically selects an available presentation renderer. On the tested
+Apple Silicon Mac this is Metal. Query `canvas.presentationRenderer()` to
+see the selected backend. Offscreen canvases report `offscreen`.
+
+Cairo rasterizes into CPU image surfaces before SDL uploads and presents
+them. The installed Cairo 1.18 build has no OpenGL backend. Hardware
+presentation does not imply GPU rasterization of Cairo paths.

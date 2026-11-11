@@ -136,6 +136,7 @@ class CanvasTest {
 
     @Test void presentsAndPollsAWindowUsingSdlDummyVideo() {
         try (Canvas canvas = new Canvas("Test", 64, 48)) {
+            assertEquals("software", canvas.presentationRenderer());
             canvas.fillRect(0, 0, 64, 48);
             canvas.present();
             assertTrue(canvas.pollEvents());
@@ -163,6 +164,7 @@ class CanvasTest {
 
     @Test void restoresFontAndIgnoresRestoreUnderflow() {
         try (Canvas canvas = Canvas.offscreen(20, 20)) {
+            assertEquals("offscreen", canvas.presentationRenderer());
             canvas.restore();
             canvas.setFont("Sans 12px");
             double original = canvas.measureText("ABC").width;
@@ -348,6 +350,28 @@ class CanvasTest {
             canvas.setLiveResizeRedraw(null);
             exposeDuringResize();
             assertEquals(before + 1, calls[0]);
+        }
+    }
+    @Test void restoresAntialiasQualityWithDrawingState() throws Exception {
+        try (Canvas reference = Canvas.offscreen(32, 32); Canvas canvas = Canvas.offscreen(32, 32)) {
+            canvas.save();
+            canvas.setAntialias(Canvas.Antialias.FAST);
+            canvas.fillRect(1.25, 1.25, 8.5, 8.5);
+            canvas.restore();
+            canvas.clearRect(0, 0, 32, 32);
+            for (Canvas target : new Canvas[]{reference, canvas}) {
+                target.moveTo(2.1, 3.2);
+                target.lineTo(27.7, 24.3);
+                target.setLineWidth(1.3);
+                target.stroke();
+            }
+            BufferedImage expected = pixels(reference);
+            BufferedImage actual = pixels(canvas);
+            assertArrayEquals(expected.getRGB(0, 0, 32, 32, null, 0, 32),
+                    actual.getRGB(0, 0, 32, 32, null, 0, 32));
+            assertThrows(NullPointerException.class, () -> canvas.setAntialias(null));
+            canvas.setAntialias(Canvas.Antialias.DEFAULT);
+            canvas.flush();
         }
     }
 }

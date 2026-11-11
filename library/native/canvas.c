@@ -137,6 +137,14 @@ static bool create_backing(JNIEnv *env, Canvas *c, int width, int height) {
     return true;
 }
 
+JNIEXPORT jstring JNICALL Java_nativecanvas_Canvas_rendererName
+  (JNIEnv *env, jclass type, jlong handle) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    const char *name = c->renderer ? SDL_GetRendererName(c->renderer) : "offscreen";
+    if (!name) { fail(env, SDL_GetError()); return NULL; }
+    return (*env)->NewStringUTF(env, name);
+}
+
 JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_open
   (JNIEnv *env, jclass type, jbyteArray title, jint width, jint height, jboolean resizable) {
     Canvas *c = calloc(1, sizeof(*c));
@@ -244,7 +252,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
     }
     const unsigned char *end = p + length;
     static const unsigned char arity[] = {
-        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4, 4, 4, 6, 6
+        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4, 4, 4, 6, 6, 1
     };
     while (p < end) {
         unsigned op = *p++;
@@ -334,6 +342,9 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
                 cairo_path_destroy(path);
                 break;
             }
+            case 29:
+                cairo_set_antialias(cr, v[0] == 1 ? CAIRO_ANTIALIAS_FAST : CAIRO_ANTIALIAS_DEFAULT);
+                break;
             case 25: case 26: case 27: case 28: {
                 if (end - p < 4) goto malformed;
                 uint32_t count = read_uint(&p);

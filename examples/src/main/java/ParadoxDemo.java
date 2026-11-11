@@ -1,5 +1,6 @@
 import java.util.Random;
 import nativecanvas.Canvas;
+import nativecanvas.ui.*;
 
 /** A projected torus knot with a flowing particle field and a reactive camera. */
 public final class ParadoxDemo {
@@ -38,6 +39,10 @@ public final class ParadoxDemo {
     private double yaw, pitch, zoom = 1, sx, sy, z;
     private double sinYaw, cosYaw, sinPitch, cosPitch, spinSin, spinCos;
     private boolean pulse;
+    private boolean fast = true;
+    private int particleCount = PARTICLES;
+    private double speed = 1;
+    private boolean paused;
 
     private ParadoxDemo() {
         Random random = new Random(7072);
@@ -58,8 +63,22 @@ public final class ParadoxDemo {
         boolean png = args.length > 0 && "--png".equals(args[0]);
         boolean smoke = args.length > 0 && "--smoke".equals(args[0]);
         ParadoxDemo demo = new ParadoxDemo();
-        try (Canvas canvas = png ? Canvas.offscreen(WIDTH, HEIGHT)
+        try (Canvas canvas = png || (args.length > 0 && "--benchmark".equals(args[0])) ? Canvas.offscreen(WIDTH, HEIGHT)
                 : new Canvas("Paradox Engine", WIDTH, HEIGHT, true)) {
+            if (args.length > 0 && "--benchmark".equals(args[0])) {
+                demo.fast = args.length < 2 || !"default".equals(args[1]);
+                long[] frames = new long[100];
+                for (int i = -30; i < frames.length; i++) {
+                    long startFrame = System.nanoTime();
+                    demo.draw(canvas, 3.8 + (i + 30) / 60.0);
+                    canvas.flush();
+                    if (i >= 0) frames[i] = System.nanoTime() - startFrame;
+                }
+                java.util.Arrays.sort(frames);
+                System.out.printf("%s: p50 %.3f ms, p95 %.3f ms%n",
+                        demo.fast ? "fast" : "default", frames[50] / 1e6, frames[94] / 1e6);
+                return;
+            }
             if (png) {
                 double time = args.length > 2 ? Double.parseDouble(args[2]) : 3.8;
                 if (!Double.isFinite(time) || time < 0) throw new IllegalArgumentException("Invalid animation time");
@@ -67,28 +86,95 @@ public final class ParadoxDemo {
                 canvas.writePng(args.length > 1 ? args[1] : "paradox.png");
                 return;
             }
+            Controls controls = new Controls(demo, canvas.width(), canvas.height());
             long start = System.nanoTime();
-            canvas.setLiveResizeRedraw(() -> demo.draw(canvas, seconds(start)));
-            Canvas.InputEvent event = new Canvas.InputEvent();
-            while (true) {
-                while (canvas.pollEvent(event)) {
-                    if (event.type() == Canvas.InputEvent.CLOSE
-                            || (event.type() == Canvas.InputEvent.KEY_DOWN && event.keyCode() == 27)) return;
-                    if (event.type() == Canvas.InputEvent.POINTER_MOVE) {
-                        demo.yaw = (event.x() / canvas.width() - 0.5) * 0.85;
-                        demo.pitch = (event.y() / canvas.height() - 0.5) * 0.7;
-                    } else if (event.type() == Canvas.InputEvent.SCROLL) {
-                        demo.zoom = Math.max(0.65, Math.min(1.6, demo.zoom + event.deltaY() * 0.06));
-                    } else if (event.type() == Canvas.InputEvent.POINTER_DOWN) {
-                        demo.pulse = !demo.pulse;
-                    }
-                }
-                double time = seconds(start);
-                demo.draw(canvas, time);
+            long previous = start;
+            canvas.setLiveResizeRedraw(() -> {
+                controls.ui.resize(canvas.width(), canvas.height());
+                controls.ui.draw(canvas);
+            });
+            while (controls.ui.poll(canvas)) {
+                long now = System.nanoTime();
+                if (!demo.paused) controls.time += (now - previous) / 1e9 * demo.speed;
+                previous = now;
+                controls.ui.draw(canvas);
                 canvas.present();
-                if (smoke && time >= 1) return;
+                if (smoke && seconds(start) >= 1) return;
                 Thread.sleep(4);
             }
+        }
+    }
+
+    private static final class Controls {
+        private final Ui ui;
+        private double time;
+
+        Controls(ParadoxDemo demo, int width, int height) {
+            Label density = new Label("");
+            Label speed = new Label("");
+            Label zoom = new Label("");
+            Runnable refresh = () -> {
+                density.setText("Particles: " + demo.particleCount);
+                speed.setText(String.format(java.util.Locale.ROOT, "Speed: %.2fx", demo.speed));
+                zoom.setText(String.format(java.util.Locale.ROOT, "Zoom: %.2fx", demo.zoom));
+            };
+            refresh.run();
+            Checkbox pause = new Checkbox("Pause animation", false, value -> demo.paused = value);
+            Checkbox surge = new Checkbox("Energy surge", demo.pulse, value -> demo.pulse = value);
+            Checkbox fast = new Checkbox("Fast edge rendering", demo.fast, value -> demo.fast = value);
+            Column panel = new Column(14, 8)
+                    .add(new Label("ENGINE CONTROLS").setFont("Sans Bold", 17).setColor(0x73e8dfff))
+                    .add(pause).add(surge).add(fast)
+                    .add(density).add(adjustments(
+                            () -> demo.particleCount = Math.max(0, demo.particleCount - 600),
+                            () -> demo.particleCount = Math.min(PARTICLES, demo.particleCount + 600), refresh))
+                    .add(speed).add(adjustments(
+                            () -> demo.speed = Math.max(0.25, demo.speed - 0.25),
+                            () -> demo.speed = Math.min(4, demo.speed + 0.25), refresh))
+                    .add(zoom).add(adjustments(
+                            () -> demo.zoom = Math.max(0.5, demo.zoom - 0.1),
+                            () -> demo.zoom = Math.min(2, demo.zoom + 0.1), refresh))
+                    .add(new Button("Reset", () -> {
+                        demo.particleCount = PARTICLES;
+                        demo.speed = demo.zoom = 1;
+                        demo.yaw = demo.pitch = 0;
+                        demo.paused = demo.pulse = false;
+                        demo.fast = true;
+                        pause.setChecked(false);
+                        surge.setChecked(false);
+                        fast.setChecked(true);
+                        refresh.run();
+                    }));
+            Control viewport = new Control() {
+                private double lastX, lastY;
+                @Override public double preferredHeight(double width) { return 0; }
+                @Override public void activate() {}
+                @Override protected void onPointerPressed(double x, double y) { lastX = x; lastY = y; }
+                @Override protected void onPointerDragged(double x, double y) {
+                    demo.yaw += (x - lastX) * 0.006;
+                    demo.pitch += (y - lastY) * 0.006;
+                    lastX = x;
+                    lastY = y;
+                }
+                @Override protected void paint(Canvas c) {
+                    if (width() <= 0 || height() <= 0) return;
+                    c.save();
+                    c.clipRect(x(), y(), width(), height());
+                    c.translate(x(), y());
+                    demo.draw(c, time, width(), height(), true);
+                    c.restore();
+                }
+            };
+            Grid root = new Grid(new Track[]{Track.FILL, Track.size(280)},
+                    new Track[]{Track.FILL}, 0, 0, 0)
+                    .add(0, 0, viewport).add(0, 1, new ScrollPane(panel, 1));
+            ui = new Ui(root, width, height);
+        }
+
+        private static Row adjustments(Runnable decrease, Runnable increase, Runnable refresh) {
+            return new Row(0, 8)
+                    .add(new Button("−", () -> { decrease.run(); refresh.run(); }), Track.FILL)
+                    .add(new Button("+", () -> { increase.run(); refresh.run(); }), Track.FILL);
         }
     }
 
@@ -100,11 +186,16 @@ public final class ParadoxDemo {
     }
 
     private void draw(Canvas c, double time) {
+        draw(c, time, c.width(), c.height(), false);
+    }
+
+    private void draw(Canvas c, double time, double width, double height, boolean withControls) {
         c.setFillStyle(0x03050eff);
-        c.fillRect(0, 0, c.width(), c.height());
-        double scale = Math.min((double)c.width() / WIDTH, (double)c.height() / HEIGHT);
+        c.fillRect(0, 0, width, height);
+        double scale = Math.min((double)width / WIDTH, (double)height / HEIGHT);
         c.save();
-        c.translate((c.width() - WIDTH * scale) / 2, (c.height() - HEIGHT * scale) / 2);
+        c.setAntialias(fast ? Canvas.Antialias.FAST : Canvas.Antialias.DEFAULT);
+        c.translate((width - WIDTH * scale) / 2, (height - HEIGHT * scale) / 2);
         c.scale(scale, scale);
         c.clipRect(0, 0, WIDTH, HEIGHT);
         c.setFillStyle(BACKDROP);
@@ -137,8 +228,8 @@ public final class ParadoxDemo {
         c.fillText("PARADOX ENGINE", 38, 73);
         c.setFont("Sans 12px");
         c.setFillStyle(0x91a7d3ff);
-        c.fillText("TORUS KNOT   /   36 STRANDS   /   7,200 PARTICLES", 40, 96);
-        c.fillText("MOVE  Orbit     SCROLL  Zoom     CLICK  Surge", 40, 763);
+        c.fillText("TORUS KNOT   /   36 STRANDS   /   " + particleCount + " PARTICLES", 40, 96);
+        c.fillText(withControls ? "DRAG TO ORBIT" : "PARADOX ENGINE", 40, 763);
         c.restore();
     }
 
@@ -329,7 +420,8 @@ public final class ParadoxDemo {
     }
 
     private void drawParticles(Canvas c, double time, int layer) {
-        for (double[] p : particles) {
+        for (int index = 0; index < particleCount; index++) {
+            double[] p = particles[index];
             int step = (int)((p[0] + time * (26 + p[2] * 46)) % STEPS);
             double angle = p[1] + time * (0.35 + p[3] * 0.8);
             double radius = 39 + p[2] * p[2] * (pulse ? 175 : 95);

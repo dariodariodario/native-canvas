@@ -40,6 +40,12 @@ public final class Canvas implements AutoCloseable {
         updateSize(logicalSize(handle));
     }
 
+    /** SDL presentation backend, or "offscreen" for an image surface. Cairo rasterization is CPU-based. */
+    public String presentationRenderer() {
+        checkOpen();
+        return rendererName(handle);
+    }
+
     /** Current logical width, updated while polling window events. */
     public int width() { return width; }
 
@@ -197,6 +203,15 @@ public final class Canvas implements AutoCloseable {
         point(15, x, y);
     }
     public void rotate(double radians) { command(16, 8); commands.putDouble(radians); }
+    public enum Antialias { DEFAULT, FAST }
+
+    /** Selects geometric edge quality. FAST prioritizes rasterization throughput. */
+    public void setAntialias(Antialias quality) {
+        java.util.Objects.requireNonNull(quality);
+        command(29, 8);
+        commands.putDouble(quality == Antialias.FAST ? 1 : 0);
+    }
+
     public void setLineWidth(double width) {
         if (width > 0 && Double.isFinite(width)) { command(17, 8); commands.putDouble(width); }
     }
@@ -436,6 +451,7 @@ public final class Canvas implements AutoCloseable {
         }
     }
 
+    private static native String rendererName(long handle);
     private static native long open(byte[] title, int width, int height, boolean resizable);
     private static native long logicalSize(long handle);
     private static native long resizeBacking(long handle);
