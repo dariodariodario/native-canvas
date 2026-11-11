@@ -1,0 +1,244 @@
+package nativecanvas;
+
+import java.awt.image.BufferedImage;
+import java.nio.file.Path;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import javax.imageio.ImageIO;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+
+class CanvasTest {
+    @TempDir Path temp;
+
+    @BeforeEach void requireNativeLibrary() {
+        assumeFalse(Boolean.getBoolean("native.skip"));
+    }
+
+    private BufferedImage pixels(Canvas canvas) throws Exception {
+        Path png = temp.resolve("result.png");
+        canvas.writePng(png.toString());
+        return ImageIO.read(png.toFile());
+    }
+
+    @Test void paintsAndClearsPixelsAcrossAutomaticBatches() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(24, 16)) {
+            canvas.setFillStyle(0xff0000ff);
+            for (int i = 0; i < 20_000; i++) canvas.fillRect(0, 0, 24, 16);
+            canvas.clearRect(0, 0, 4, 4);
+            canvas.setStrokeStyle(0x00ff00ff);
+            canvas.setLineWidth(2);
+            canvas.strokeRect(8, 4, 8, 8);
+            BufferedImage image = pixels(canvas);
+            assertEquals(0, image.getRGB(1, 1));
+            assertEquals(0xffff0000, image.getRGB(5, 5));
+            assertEquals(0xff00ff00, image.getRGB(8, 8));
+        }
+    }
+
+    @Test void savesTransformStyleAndClipWithoutDiscardingPath() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(32, 32)) {
+            canvas.rect(2, 2, 10, 10);
+            canvas.setLineWidth(4);
+            assertEquals(10, canvas.pathBounds().width);
+            assertEquals(10, canvas.fillBounds().width);
+            assertEquals(14, canvas.strokeBounds().width);
+            canvas.setFillStyle(0x0000ffff);
+            canvas.save();
+            canvas.clip();
+            assertEquals(10, canvas.clipBounds().width);
+            canvas.translate(5, 5);
+            canvas.scale(2, 2);
+            canvas.rotate(Math.PI / 2);
+            canvas.setFillStyle(0xff0000ff);
+            canvas.fillRect(0, 0, 10, 10);
+            canvas.restore();
+            assertEquals(32, canvas.clipBounds().width);
+            assertEquals(10, canvas.pathBounds().width);
+            canvas.fill();
+            BufferedImage image = pixels(canvas);
+            assertEquals(0xff0000ff, image.getRGB(4, 4));
+            assertEquals(0, image.getRGB(14, 14));
+        }
+    }
+
+    @Test void buildsAndStrokesCurvedPaths() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(30, 30)) {
+            canvas.beginPath();
+            canvas.moveTo(2, 3);
+            canvas.lineTo(18, 3);
+            canvas.bezierCurveTo(24, 3, 24, 17, 18, 17);
+            canvas.closePath();
+            assertTrue(canvas.pathBounds().width > 16);
+            canvas.setStrokeStyle(0xffffffff);
+            canvas.stroke();
+            assertNotEquals(0, pixels(canvas).getRGB(10, 3));
+        }
+    }
+
+    @Test void measuresQueuedFontAndRendersUnicodeText() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(200, 60)) {
+            canvas.setFont("Sans 12px");
+            double small = canvas.measureText("Καλημέρα").width;
+            canvas.setFont("Sans 24px");
+            Canvas.TextMetrics metrics = canvas.measureText("Καλημέρα");
+            assertTrue(metrics.width > small);
+            assertTrue(metrics.height > 0 && metrics.baseline > 0 && metrics.inkWidth > 0);
+            assertEquals(0, pixels(canvas).getRGB(2, 2));
+            canvas.setFillStyle(0xffffffff);
+            canvas.fillText("Καλημέρα", 4, 40);
+            BufferedImage image = pixels(canvas);
+            boolean painted = false;
+            for (int pixel : image.getRGB(0, 0, 200, 60, null, 0, 200))
+                painted |= (pixel >>> 24) != 0;
+            assertTrue(painted);
+        }
+    }
+
+    @Test void loadsScalesAndCompositesPngAndEnforcesImageOwnership() throws Exception {
+        Path sprite = temp.resolve("sprite.png");
+        try (Canvas source = Canvas.offscreen(4, 4);
+             Canvas target = Canvas.offscreen(16, 16)) {
+            source.setFillStyle(0xff000080);
+            source.fillRect(0, 0, 4, 4);
+            source.writePng(sprite.toString());
+            target.setFillStyle(0x0000ffff);
+            target.fillRect(0, 0, 16, 16);
+            try (Canvas.Image image = target.loadImage(sprite.toString())) {
+                assertEquals(4, image.width());
+                assertEquals(4, image.height());
+                assertThrows(IllegalArgumentException.class, () -> source.drawImage(image, 0, 0, 4, 4));
+                target.drawImage(image, 4, 4, 8, 8);
+            }
+            BufferedImage image = pixels(target);
+            assertEquals(0xff80007f, image.getRGB(4, 4));
+            assertEquals(0xff0000ff, image.getRGB(12, 4));
+            assertThrows(IllegalStateException.class, () -> target.loadImage(temp.resolve("missing").toString()));
+        }
+    }
+
+    @Test void enforcesCanvasLifecycleAndThreadOwnership() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> Canvas.offscreen(0, 1));
+        try (Canvas canvas = Canvas.offscreen(2, 2)) {
+            FutureTask<Void> task = new FutureTask<>(() -> { canvas.flush(); return null; });
+            new Thread(task).start();
+            assertInstanceOf(IllegalStateException.class, assertThrows(ExecutionException.class, task::get).getCause());
+            assertThrows(IllegalStateException.class, canvas::present);
+            assertThrows(IllegalStateException.class, canvas::pollEvents);
+            canvas.close();
+            assertThrows(IllegalStateException.class, canvas::flush);
+        }
+    }
+
+    @Test void presentsAndPollsAWindowUsingSdlDummyVideo() {
+        try (Canvas canvas = new Canvas("Test", 64, 48)) {
+            canvas.fillRect(0, 0, 64, 48);
+            canvas.present();
+            assertTrue(canvas.pollEvents());
+            assertFalse(canvas.pollEvent(new Canvas.InputEvent()));
+        }
+    }
+    @Test void rectangleClipIntersectsExistingClipAndKeepsPath() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(20, 20)) {
+            canvas.rect(1, 2, 3, 4);
+            canvas.clipRect(4, 4, 10, 10);
+            canvas.save();
+            canvas.clipRect(8, 2, 10, 8);
+            Canvas.Bounds clip = canvas.clipBounds();
+            assertAll(() -> assertEquals(8, clip.x), () -> assertEquals(4, clip.y),
+                    () -> assertEquals(6, clip.width), () -> assertEquals(6, clip.height));
+            canvas.fillRect(0, 0, 20, 20);
+            canvas.restore();
+            assertEquals(10, canvas.clipBounds().width);
+            assertEquals(3, canvas.pathBounds().width);
+            BufferedImage image = pixels(canvas);
+            assertEquals(0xff000000, image.getRGB(8, 4));
+            assertEquals(0, image.getRGB(7, 4));
+        }
+    }
+
+    @Test void restoresFontAndIgnoresRestoreUnderflow() {
+        try (Canvas canvas = Canvas.offscreen(20, 20)) {
+            canvas.restore();
+            canvas.setFont("Sans 12px");
+            double original = canvas.measureText("ABC").width;
+            canvas.save();
+            canvas.setFont("Sans 24px");
+            assertTrue(canvas.measureText("ABC").width > original);
+            canvas.restore();
+            assertEquals(original, canvas.measureText("ABC").width);
+        }
+    }
+
+    @Test void imageCloseIsIdempotentAndClosedImagesCannotBeQueued() throws Exception {
+        try (Canvas canvas = Canvas.offscreen(4, 4)) {
+            Path png = temp.resolve("image.png");
+            canvas.writePng(png.toString());
+            Canvas.Image image = canvas.loadImage(png.toString());
+            image.close();
+            image.close();
+            assertThrows(IllegalArgumentException.class, () -> canvas.drawImage(image, 0, 0, 4, 4));
+            Canvas.Image owned = canvas.loadImage(png.toString());
+            canvas.close();
+            assertDoesNotThrow(owned::close);
+        }
+    }
+
+    @Test void immediateDrawingPreservesCurrentPathAndInvalidTransformsDoNotPoisonIt() {
+        try (Canvas canvas = Canvas.offscreen(20, 20)) {
+            canvas.rect(2, 3, 4, 5);
+            canvas.scale(0, 1);
+            canvas.rotate(Double.NaN);
+            canvas.setLineWidth(-1);
+            canvas.fillRect(0, 0, 2, 2);
+            canvas.strokeRect(0, 0, 2, 2);
+            canvas.clearRect(0, 0, 2, 2);
+            canvas.fillText("A", 0, 10);
+            Canvas.Bounds path = canvas.pathBounds();
+            assertAll(() -> assertEquals(2, path.x), () -> assertEquals(3, path.y),
+                    () -> assertEquals(4, path.width), () -> assertEquals(5, path.height));
+            assertEquals(5, canvas.strokeBounds().width);
+        }
+    }
+
+    private static native void enqueueInput();
+
+    @Test void decodesSdlInputAndTracksCloseRequests() {
+        System.loadLibrary("nativecanvas_test");
+        try (Canvas canvas = new Canvas("Input test", 64, 48)) {
+            assertTrue(canvas.pollEvents());
+            enqueueInput();
+            Canvas.InputEvent event = new Canvas.InputEvent();
+            expect(canvas, event, Canvas.InputEvent.KEY_DOWN);
+            assertEquals('a', event.keyCode());
+            assertEquals(4, event.scanCode());
+            assertEquals(1, event.modifiers());
+            assertTrue(event.repeat());
+            expect(canvas, event, Canvas.InputEvent.KEY_UP);
+            assertFalse(event.repeat());
+            expect(canvas, event, Canvas.InputEvent.POINTER_MOVE);
+            assertEquals(31.5f, event.x());
+            assertEquals(12f, event.y());
+            assertEquals(-2f, event.deltaX());
+            expect(canvas, event, Canvas.InputEvent.POINTER_DOWN);
+            assertEquals(1, event.button());
+            assertEquals(2, event.clicks());
+            expect(canvas, event, Canvas.InputEvent.POINTER_UP);
+            expect(canvas, event, Canvas.InputEvent.SCROLL);
+            assertEquals(2f, event.deltaY());
+            assertEquals(31.5f, event.x());
+            expect(canvas, event, Canvas.InputEvent.CLOSE);
+            assertFalse(canvas.pollEvent(event));
+            assertFalse(canvas.pollEvents());
+        }
+    }
+
+    private static void expect(Canvas canvas, Canvas.InputEvent event, int type) {
+        assertTrue(canvas.pollEvent(event));
+        assertEquals(type, event.type());
+    }
+}

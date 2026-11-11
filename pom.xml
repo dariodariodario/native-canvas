@@ -11,15 +11,37 @@
 
     <modules>
         <module>library</module>
+        <module>toolkit</module>
         <module>examples</module>
     </modules>
 
     <properties>
+        <native.test.vm.options></native.test.vm.options>
+        <argLine></argLine>
+        <native.skip>false</native.skip>
         <maven.compiler.release>8</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>0.8.13</version>
+                    <executions>
+                        <execution>
+                            <goals><goal>prepare-agent</goal></goals>
+                        </execution>
+                        <execution>
+                            <id>coverage-report</id>
+                            <goals><goal>report</goal></goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -28,4 +50,13 @@
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>macos-native-tests</id>
+            <activation><os><family>mac</family></os></activation>
+            <properties>
+                <native.test.vm.options>-XstartOnFirstThread</native.test.vm.options>
+            </properties>
+        </profile>
+    </profiles>
 </project>

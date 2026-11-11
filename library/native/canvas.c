@@ -25,6 +25,7 @@ typedef struct {
     Style style;
     int width, height;
     bool quit;
+    char *input_text;
 } Canvas;
 
 static Canvas *window_canvas;
@@ -48,6 +49,7 @@ static char *string(JNIEnv *env, jbyteArray bytes) {
 
 static void release(Canvas *c) {
     if (!c) return;
+    g_free(c->input_text);
     if (c->layout) g_object_unref(c->layout);
     if (c->style.font) pango_font_description_free(c->style.font);
     while (c->style.previous) {
@@ -149,6 +151,8 @@ static void rect(Canvas *c, int op, const double *v) {
         cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
         cairo_fill(cr);
         cairo_restore(cr);
+    } else if (op == 24) {
+        cairo_clip(cr);
     } else if (op == 4) {
         color(cr, c->style.stroke);
         cairo_stroke(cr);
@@ -177,7 +181,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
     }
     const unsigned char *end = p + length;
     static const unsigned char arity[] = {
-        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4
+        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4
     };
     while (p < end) {
         unsigned op = *p++;
@@ -214,7 +218,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
         switch (op) {
             case 1: c->style.fill = rgba; break;
             case 2: c->style.stroke = rgba; break;
-            case 3: case 4: case 5: case 18: rect(c, op, v); break;
+            case 3: case 4: case 5: case 18: case 24: rect(c, op, v); break;
             case 6: cairo_new_path(cr); break;
             case 7: cairo_move_to(cr, v[0], v[1]); break;
             case 8: cairo_line_to(cr, v[0], v[1]); break;
@@ -307,6 +311,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_show(JNIEnv *env, jclass type, j
 }
 
 static int next_event(Canvas *c, void *output) {
+    g_clear_pointer(&c->input_text, g_free);
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         uint32_t fields[4] = {0};
@@ -325,6 +330,11 @@ static int next_event(Canvas *c, void *output) {
                 fields[1] = event.key.scancode;
                 fields[2] = event.key.mod;
                 fields[3] = event.key.repeat;
+                break;
+            case SDL_EVENT_TEXT_INPUT:
+                if (!output) continue;
+                c->input_text = g_strdup(event.text.text);
+                type = 8;
                 break;
             case SDL_EVENT_MOUSE_MOTION:
                 type = 4;
@@ -379,6 +389,23 @@ JNIEXPORT jint JNICALL Java_nativecanvas_Canvas_nextEvent
         return 0;
     }
     return next_event(c, output);
+}
+
+JNIEXPORT void JNICALL Java_nativecanvas_Canvas_textInputEnabled
+  (JNIEnv *env, jclass type, jlong handle, jboolean enabled) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    if (!c->window) { fail(env, "Canvas has no window"); return; }
+    bool ok = enabled ? SDL_StartTextInput(c->window) : SDL_StopTextInput(c->window);
+    if (!ok) fail(env, SDL_GetError());
+}
+
+JNIEXPORT jbyteArray JNICALL Java_nativecanvas_Canvas_inputText
+  (JNIEnv *env, jclass type, jlong handle) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    jsize length = c->input_text ? (jsize)strlen(c->input_text) : 0;
+    jbyteArray bytes = (*env)->NewByteArray(env, length);
+    if (bytes && length) (*env)->SetByteArrayRegion(env, bytes, 0, length, (const jbyte *)c->input_text);
+    return bytes;
 }
 
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_destroy(JNIEnv *env, jclass type, jlong handle) {

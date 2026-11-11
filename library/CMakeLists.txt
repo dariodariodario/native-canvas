@@ -11,3 +11,14 @@ target_link_libraries(nativecanvas PRIVATE PkgConfig::GRAPHICS)
 set_target_properties(nativecanvas PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}>"
     RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}>")
+
+option(NATIVECANVAS_BUILD_TESTS "Build the SDL event fixture for Java tests" OFF)
+if(NATIVECANVAS_BUILD_TESTS)
+    add_library(nativecanvas_test SHARED src/test/native/events.c)
+    target_compile_features(nativecanvas_test PRIVATE c_std_11)
+    target_include_directories(nativecanvas_test PRIVATE ${JNI_INCLUDE_DIRS})
+    target_link_libraries(nativecanvas_test PRIVATE PkgConfig::GRAPHICS)
+    set_target_properties(nativecanvas_test PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}>"
+        RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}>")
+endif()

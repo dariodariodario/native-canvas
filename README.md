@@ -103,3 +103,94 @@ submits a batch when the buffer fills or when output is requested. Cairo
 rasterizes on the CPU and SDL presents the texture. The portable CMake target
 uses JNI headers and pkg-config. Apple Silicon macOS is the current build and
 runtime target.
+
+## UI toolkit
+
+The `toolkit` module builds `nativecanvas:nativecanvas-toolkit` and depends on
+the canvas library. Compose a widget tree from `Label`, `Button`, `Checkbox`,
+`Column`, `Row`, `Grid`, and `ScrollPane`. A `Ui` lays out the tree and dispatches input.
+Tab and Shift+Tab move focus. Space and Enter activate the focused control.
+The mouse wheel scrolls the pane under the pointer.
+
+```java
+Label status = new Label("Ready");
+Column content = new Column(16, 8)
+        .add(status)
+        .add(new Button("Run", () -> status.setText("Running")))
+        .add(new Checkbox("Show details", false,
+                checked -> status.setText("Details: " + checked)));
+Ui ui = new Ui(new ScrollPane(content, 360), 420, 360);
+while (ui.poll(canvas)) {
+    ui.draw(canvas);
+    canvas.present();
+    Thread.sleep(16);
+}
+```
+
+Import the widget classes from `nativecanvas.ui` and give `Ui` the logical
+dimensions of the canvas. Build with `mvn package`, reimport the Maven project,
+and select **Native Canvas Toolkit** in IntelliJ.
+
+### Horizontal and grid layout
+
+```java
+Row actions = new Row(8, 6)
+        .add(new Button("Save", save), Track.FILL)
+        .add(new Button("Cancel", cancel), Track.size(90));
+
+Grid form = new Grid(
+        new Track[]{Track.AUTO, Track.fill(2)},
+        new Track[]{Track.AUTO, Track.size(48)}, 8, 6, 6)
+        .add(0, 0, new Label("Preferences"))
+        .add(1, 1, actions);
+```
+
+`Track.AUTO` uses the preferred size. `Track.size(pixels)` sets a fixed size.
+`Track.FILL` keeps the preferred size and shares extra space. Use
+`Track.fill(weight)` to change that share. When space is tight, tracks keep
+their minimum sizes and can overflow. Built-in controls estimate their
+preferred text width. Grid indices are zero-based and each cell holds one
+widget. Rows and grids can be nested inside other layouts.
+
+## Tests
+
+Run `mvn test` from the root. The `library` tests exercise the JNI canvas,
+including rendering, text and path measurement, image compositing, lifecycle,
+and SDL events with a headless video driver. The `toolkit` tests cover widget
+ownership, layout, focus, pointer dispatch, scroll behavior, and rendered
+clipping. Tests live in each module's `src/test` directory.
+
+Run `mvn verify` to generate Java coverage reports in
+`library/target/site/jacoco` and `toolkit/target/site/jacoco`. JNI integration
+tests exercise native behavior, and the coverage reports measure Java code.
+
+### Text fields and label styles
+
+```java
+Label name = new Label("Name").setFont("Sans Bold", 18).setColor(0x7acffaff);
+TextField input = new TextField("", value -> name.setText("Name: " + value));
+Column form = new Column(12, 8).add(name).add(input);
+```
+
+Click or Tab to focus the text field. It accepts committed Unicode text and
+supports Left, Right, Home, End, Backspace, and Delete. It is single-line and
+does not provide selection, clipboard shortcuts, or IME preedit display.
+`setText` changes the value without firing the edit callback. Label font sizes
+are in logical pixels and colors use `0xRRGGBBAA`.
+
+### Paint example
+
+Select **Native Canvas Paint** in IntelliJ after running `mvn package`, or run
+from the project root on macOS:
+
+```sh
+java -XstartOnFirstThread --enable-native-access=ALL-UNNAMED \
+  -Djava.library.path=library/target/native \
+  -cp examples/target/classes:toolkit/target/classes:library/target/classes PaintDemo
+```
+
+Choose Brush, Eraser, Line, or Rectangle, then drag on the white drawing
+area. Choose a color or cycle the stroke width with **Width**. **Undo**
+removes the last mark, **Clear** empties the drawing, and **Save PNG** writes
+`paint.png` in the working directory. The example replays its marks to
+export the drawing without the toolbar.

@@ -84,6 +84,11 @@ public final class Canvas implements AutoCloseable {
     }
     public void rect(double x, double y, double w, double h) { box(18, x, y, w, h); }
     public void clip() { command(19, 0); }
+
+    /** Intersects the clip with a rectangle while preserving the current path. */
+    public void clipRect(double x, double y, double width, double height) {
+        box(24, x, y, width, height);
+    }
     public void bezierCurveTo(double x1, double y1, double x2, double y2, double x, double y) {
         command(20, 48);
         commands.putDouble(x1).putDouble(y1).putDouble(x2).putDouble(y2).putDouble(x).putDouble(y);
@@ -237,7 +242,15 @@ public final class Canvas implements AutoCloseable {
     public boolean pollEvent(InputEvent event) {
         checkOpen();
         event.type = nextEvent(handle, event.data);
+        event.text = event.type == InputEvent.TEXT_INPUT
+                ? new String(inputText(handle), StandardCharsets.UTF_8) : "";
         return event.type != 0;
+    }
+
+    /** Enables or disables committed text events for this window. */
+    public void setTextInputEnabled(boolean enabled) {
+        checkOpen();
+        textInputEnabled(handle, enabled);
     }
 
     public static final class InputEvent {
@@ -248,9 +261,13 @@ public final class Canvas implements AutoCloseable {
         public static final int POINTER_DOWN = 5;
         public static final int POINTER_UP = 6;
         public static final int SCROLL = 7;
+        public static final int TEXT_INPUT = 8;
 
         private final ByteBuffer data = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
         private int type;
+        private String text = "";
+
+        public String text() { return text; }
 
         public int type() { return type; }
         /** SDL virtual key code. */
@@ -283,6 +300,8 @@ public final class Canvas implements AutoCloseable {
     private static native void draw(long handle, ByteBuffer commands, int length);
     private static native void show(long handle);
     private static native boolean poll(long handle);
+    private static native byte[] inputText(long handle);
+    private static native void textInputEnabled(long handle, boolean enabled);
     private static native int nextEvent(long handle, ByteBuffer event);
     private static native void extents(long handle, int kind, double[] bounds);
     private static native void measure(long handle, byte[] text, double[] metrics);
