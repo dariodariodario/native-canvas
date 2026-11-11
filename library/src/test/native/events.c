@@ -66,3 +66,13 @@ JNIEXPORT void JNICALL Java_nativecanvas_CanvasTest_exposeDuringResize(JNIEnv *e
     SDL_free(windows);
     push_events(env, &event, 1);
 }
+
+JNIEXPORT void JNICALL Java_nativecanvas_ui_UiTest_queueRepaintOrClose(
+        JNIEnv *env, jclass type, jboolean close) {
+    SDL_Event events[] = {
+        {.window = {.type = SDL_EVENT_WINDOW_EXPOSED}},
+        {.key = {.type = SDL_EVENT_KEY_UP, .key = SDLK_A}}
+    };
+    if (close) events[0].type = SDL_EVENT_QUIT;
+    push_events(env, events, close ? 1 : 2);
+}

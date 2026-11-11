@@ -475,6 +475,10 @@ static int next_event(Canvas *c, void *output) {
                 fields[2] = event.key.mod;
                 fields[3] = event.key.repeat;
                 break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+                if (event.window.data1 == 1) continue;
+                type = 10;
+                break;
             case SDL_EVENT_WINDOW_RESIZED:
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 if (!output) c->resize_pending = true;
@@ -519,6 +523,14 @@ static int next_event(Canvas *c, void *output) {
         }
     }
     return 0;
+}
+
+JNIEXPORT void JNICALL Java_nativecanvas_Canvas_waitForWindowEvent
+  (JNIEnv *env, jclass type, jlong handle) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    if (!c->window) { fail(env, "Canvas has no window"); return; }
+    if (!c->quit && !SDL_WaitEvent(NULL) && !(*env)->ExceptionCheck(env))
+        fail(env, SDL_GetError());
 }
 
 JNIEXPORT jint JNICALL Java_nativecanvas_Canvas_poll(JNIEnv *env, jclass type, jlong handle) {

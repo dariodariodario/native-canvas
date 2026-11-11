@@ -2,7 +2,7 @@ import nativecanvas.Canvas;
 import nativecanvas.ui.*;
 
 public final class ToolkitDemo {
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) {
         boolean png = args.length > 0 && "--png".equals(args[0]);
         boolean smoke = args.length > 0 && "--smoke".equals(args[0]);
         try (Canvas canvas = png ? Canvas.offscreen(420, 360) : new Canvas("Native Canvas UI", 420, 360, true)) {
@@ -35,16 +35,13 @@ public final class ToolkitDemo {
                 canvas.writePng(args.length > 1 ? args[1] : "toolkit.png");
                 return;
             }
-            canvas.setLiveResizeRedraw(() -> {
-                ui.resize(canvas.width(), canvas.height());
-                ui.draw(canvas);
-            });
-            do {
-                if (!ui.poll(canvas)) break;
+            if (smoke) {
+                ui.poll(canvas);
                 ui.draw(canvas);
                 canvas.present();
-                if (!smoke) Thread.sleep(16);
-            } while (!smoke);
+            } else {
+                ui.run(canvas);
+            }
         }
     }
 }

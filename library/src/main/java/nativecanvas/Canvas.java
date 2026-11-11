@@ -359,6 +359,13 @@ public final class Canvas implements AutoCloseable {
         return (flags & 1) != 0;
     }
 
+    /** Waits until the window has a pending event, leaving it queued for polling. */
+    public void waitForEvents() {
+        checkOutsideResize();
+        checkOpen();
+        waitForWindowEvent(handle);
+    }
+
     /** Reads the next supported SDL event into a caller-owned, reusable object. */
     public boolean pollEvent(InputEvent event) {
         checkOutsideResize();
@@ -390,6 +397,8 @@ public final class Canvas implements AutoCloseable {
         public static final int TEXT_INPUT = 8;
         /** Logical or backing-pixel size changed. Redraw the canvas after this event. */
         public static final int RESIZE = 9;
+        /** The window was exposed and its contents should be redrawn. */
+        public static final int EXPOSED = 10;
 
         private final ByteBuffer data = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
         private int type;
@@ -434,6 +443,7 @@ public final class Canvas implements AutoCloseable {
     private static native void requestWindowSize(long handle, int width, int height);
     private static native void draw(long handle, ByteBuffer commands, int length);
     private static native void show(long handle);
+    private static native void waitForWindowEvent(long handle);
     private static native int poll(long handle);
     private static native byte[] inputText(long handle);
     private static native void textInputEnabled(long handle, boolean enabled);

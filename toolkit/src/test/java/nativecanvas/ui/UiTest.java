@@ -197,4 +197,31 @@ class UiTest {
             canvas.present();
         }
     }
+    private static native void queueRepaintOrClose(boolean close);
+
+    @Test void eventLoopCoalescesEventsAndStopsOnClose() {
+        assumeFalse(Boolean.getBoolean("native.skip"));
+        System.loadLibrary("nativecanvas_test");
+        int[] paints = {0};
+        Widget widget = new Widget() {
+            @Override public double preferredHeight(double width) { return 20; }
+
+            @Override protected void paint(Canvas canvas) {
+                int frame = ++paints[0];
+                if (frame == 1) {
+                    queueRepaintOrClose(false);
+                    queueRepaintOrClose(false);
+                } else if (frame == 2) {
+                    queueRepaintOrClose(true);
+                } else {
+                    fail("Unexpected frame " + frame);
+                }
+            }
+        };
+        try (Canvas canvas = new Canvas("Event loop test", 100, 80)) {
+            assertTrue(canvas.pollEvents());
+            new Ui(widget, 100, 80).run(canvas);
+            assertEquals(2, paints[0]);
+        }
+    }
 }

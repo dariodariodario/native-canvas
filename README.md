@@ -146,11 +146,7 @@ Column content = new Column(16, 8)
         .add(new Checkbox("Show details", false,
                 checked -> status.setText("Details: " + checked)));
 Ui ui = new Ui(new ScrollPane(content, 360), 420, 360);
-while (ui.poll(canvas)) {
-    ui.draw(canvas);
-    canvas.present();
-    Thread.sleep(16);
-}
+ui.run(canvas);
 ```
 
 Import the widget classes from `nativecanvas.ui` and give `Ui` the logical
@@ -238,3 +234,18 @@ For live resize, register a drawing callback with
 Canvas updates its backing before the callback and presents afterward. Keep
 the callback to drawing and layout. The regular event loop continues to
 handle input and queued resize events.
+
+
+### Rendering loops
+
+`Ui.run(canvas)` owns an event-driven window loop. It paints the initial
+frame, waits for SDL events while idle, and redraws when input changes
+visible state or the window is resized or exposed. It combines redraws
+from one batch of queued events into a single frame. Both Toolkit Demo
+and Paint use this loop. Paint keeps the marks in memory and replays them
+when the UI needs repainting.
+
+For a custom Canvas loop, use `pollEvent(event)` or `pollEvents()` and
+`present()` to render continuously. To render on demand, call
+`waitForEvents()` before draining the queue, then draw and present if
+your scene changed or you receive an `EXPOSED` or `RESIZE` event.

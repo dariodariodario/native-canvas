@@ -11,6 +11,7 @@ public final class Ui {
     private final Canvas.InputEvent event = new Canvas.InputEvent();
     private Control focused, hovered, pressed;
     private boolean textInputEnabled;
+    private boolean repaintRequested = true;
     private double pointerX = -1, pointerY = -1;
 
     public Ui(Widget root, int width, int height) {
@@ -58,20 +59,27 @@ public final class Ui {
     public void pointerMoved(double x, double y) {
         pointerX = x;
         pointerY = y;
-        if (hovered != null) hovered.hovered = false;
         Widget hit = root.hit(x, y);
-        hovered = hit instanceof Control ? (Control) hit : null;
+        Control next = hit instanceof Control ? (Control) hit : null;
+        if (hovered == next) return;
+        if (hovered != null) hovered.hovered = false;
+        hovered = next;
+        repaintRequested = true;
         if (hovered != null) hovered.hovered = true;
     }
 
     public void pointerDragged(double x, double y) {
         pointerMoved(x, y);
-        if (pressed != null) pressed.onPointerDragged(x - pressed.x(), y - pressed.y());
+        if (pressed != null) {
+            pressed.onPointerDragged(x - pressed.x(), y - pressed.y());
+            repaintRequested = true;
+        }
     }
 
     public void pointerPressed(double x, double y) {
         pointerMoved(x, y);
         if (pressed != null) pressed.pressed = false;
+        if (focused != hovered || pressed != null || hovered != null) repaintRequested = true;
         focus(hovered);
         pressed = hovered;
         if (pressed != null) {
@@ -85,6 +93,7 @@ public final class Ui {
         Control target = pressed;
         pressed = null;
         if (target != null) {
+            repaintRequested = true;
             target.pressed = false;
             target.onPointerReleased(x - target.x(), y - target.y());
             if (target == hovered) target.activate();
@@ -94,7 +103,10 @@ public final class Ui {
     public void scroll(double x, double y, double delta) {
         for (Widget widget = root.hit(x, y); widget != null; widget = widget.parent) {
             if (widget instanceof ScrollPane) {
-                ((ScrollPane) widget).scrollBy(delta);
+                ScrollPane pane = (ScrollPane) widget;
+                double oldScroll = pane.scrollPosition();
+                pane.scrollBy(delta);
+                if (oldScroll != pane.scrollPosition()) repaintRequested = true;
                 break;
             }
         }
@@ -112,9 +124,16 @@ public final class Ui {
                     return false;
                 case Canvas.InputEvent.RESIZE:
                     resize(event.width(), event.height());
+                    repaintRequested = true;
+                    break;
+                case Canvas.InputEvent.EXPOSED:
+                    repaintRequested = true;
                     break;
                 case Canvas.InputEvent.TEXT_INPUT:
-                    if (focused instanceof TextField) ((TextField) focused).insert(event.text());
+                    if (focused instanceof TextField) {
+                        ((TextField) focused).insert(event.text());
+                        repaintRequested = true;
+                    }
                     break;
                 case Canvas.InputEvent.POINTER_MOVE: pointerDragged(event.x(), event.y()); break;
                 case Canvas.InputEvent.POINTER_DOWN:
@@ -125,16 +144,57 @@ public final class Ui {
                     break;
                 case Canvas.InputEvent.SCROLL: scroll(event.x(), event.y(), -event.deltaY() * 32); break;
                 case Canvas.InputEvent.KEY_DOWN:
-                    if (event.keyCode() == 9) moveFocus((event.modifiers() & 3) != 0);
-                    else if (focused instanceof TextField) ((TextField) focused).keyDown(event.keyCode());
+                    if (event.keyCode() == 9) {
+                        moveFocus((event.modifiers() & 3) != 0);
+                        repaintRequested = true;
+                    }
+                    else if (focused instanceof TextField) {
+                        ((TextField) focused).keyDown(event.keyCode());
+                        repaintRequested = true;
+                    }
                     else if (focused != null && !event.repeat()
-                            && (event.keyCode() == 13 || event.keyCode() == 32)) focused.activate();
+                            && (event.keyCode() == 13 || event.keyCode() == 32)) {
+                        focused.activate();
+                        repaintRequested = true;
+                    }
                     break;
                 default: break;
             }
             syncTextInput(canvas, focused instanceof TextField);
         }
         return true;
+    }
+
+    /**
+     * Runs an event-driven window on its owner thread until close.
+     * Draws the initial frame, coalesces input redraws, and waits while idle.
+     */
+    public void run(Canvas canvas) {
+        resize(canvas.width(), canvas.height());
+        canvas.setLiveResizeRedraw(() -> {
+            resize(canvas.width(), canvas.height());
+            draw(canvas);
+        });
+        try {
+            paintFrame(canvas);
+            while (true) {
+                canvas.waitForEvents();
+                if (!poll(canvas)) return;
+                if (repaintRequested) paintFrame(canvas);
+            }
+        } finally {
+            try {
+                syncTextInput(canvas, false);
+            } finally {
+                canvas.setLiveResizeRedraw(null);
+            }
+        }
+    }
+
+    private void paintFrame(Canvas canvas) {
+        draw(canvas);
+        canvas.present();
+        repaintRequested = false;
     }
 
     private void syncTextInput(Canvas canvas, boolean enabled) {

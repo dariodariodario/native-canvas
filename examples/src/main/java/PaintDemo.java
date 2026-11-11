@@ -14,7 +14,7 @@ public final class PaintDemo {
 
     private enum Tool { BRUSH, ERASER, LINE, RECTANGLE }
 
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) {
         boolean smoke = args.length > 0 && "--smoke".equals(args[0]);
         Label status = new Label("Brush · Black · 4 px").setFont("Sans Bold", 16);
         Drawing drawing = new Drawing();
@@ -56,11 +56,12 @@ public final class PaintDemo {
             return;
         }
         try (Canvas canvas = new Canvas("Native Canvas Paint", WIDTH, HEIGHT)) {
-            while (ui.poll(canvas)) {
+            if (smoke) {
+                ui.poll(canvas);
                 ui.draw(canvas);
                 canvas.present();
-                if (smoke) break;
-                Thread.sleep(16);
+            } else {
+                ui.run(canvas);
             }
         }
     }
