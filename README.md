@@ -249,3 +249,30 @@ For a custom Canvas loop, use `pollEvent(event)` or `pollEvents()` and
 `present()` to render continuously. To render on demand, call
 `waitForEvents()` before draining the queue, then draw and present if
 your scene changed or you receive an `EXPOSED` or `RESIZE` event.
+
+### Aurora / Afterlight
+
+Select **Native Canvas Aurora** in IntelliJ after running `mvn package`.
+The animated scene draws aurora ribbons, twinkling stars, an orbital sunset,
+and moving reflections from Canvas paths and gradients. It adapts to live
+window resize. To export a still at a specific animation time in seconds:
+
+```sh
+java -Djava.library.path=library/target/native \
+  -cp examples/target/classes:library/target/classes \
+  AuroraDemo --png examples/target/aurora.png 4
+```
+
+### Paradox Engine
+
+Select **Native Canvas Paradox** in IntelliJ after running `mvn package`.
+The demo projects a rotating 3D torus knot into Canvas paths, with 36 twisting
+strands and 7,200 flowing particles, eight inclined orbital bands, 24 rotating
+satellites, and a deforming 22-layer energy core. Move the mouse to orbit, scroll to zoom,
+and click to toggle a surge. Press Escape to exit.
+
+```sh
+java -Djava.library.path=library/target/native \
+  -cp examples/target/classes:library/target/classes \
+  ParadoxDemo --png examples/target/paradox.png 3.8
+```
