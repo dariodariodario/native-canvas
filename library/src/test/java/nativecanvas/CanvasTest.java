@@ -82,6 +82,46 @@ class CanvasTest {
         }
     }
 
+    @ParameterizedTest @EnumSource(Canvas.Backend.class)
+    void pathsRetainCoordinatesAcrossTransformChanges(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
+        try (Canvas canvas = Canvas.offscreen(40, 20, backend)) {
+            canvas.translate(5, 0);
+            canvas.beginPath();
+            canvas.rect(0, 0, 5, 5);
+            canvas.translate(10, 0);
+            canvas.rect(0, 0, 5, 5);
+            canvas.fill();
+            canvas.translate(10, 0);
+            canvas.fill();
+            BufferedImage image = pixels(canvas);
+            assertEquals(0xff000000, image.getRGB(7, 2));
+            assertEquals(0xff000000, image.getRGB(17, 2));
+            assertEquals(0, image.getRGB(27, 2));
+        }
+    }
+
+    @Test void cachedTextPreservesPaintAndFontChanges() throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.SKIA));
+        try (Canvas canvas = Canvas.offscreen(80, 40, Canvas.Backend.SKIA)) {
+            canvas.setFont("Sans 24px");
+            canvas.setFillStyle(0xff0000ff);
+            canvas.fillText("M", 2, 30);
+            canvas.setFillStyle(0x0000ffff);
+            canvas.fillText("M", 40, 30);
+            BufferedImage image = pixels(canvas);
+            boolean red = false, blue = false;
+            for (int pixel : image.getRGB(0, 0, 80, 40, null, 0, 80)) {
+                red |= pixel == 0xffff0000;
+                blue |= pixel == 0xff0000ff;
+            }
+            assertTrue(red && blue);
+            double large = canvas.measureText("M").width;
+            canvas.setFont("Sans 12px");
+            assertTrue(canvas.measureText("M").width < large);
+        }
+    }
+
     private BufferedImage pixels(Canvas canvas) throws Exception {
         Path png = temp.resolve("result.png");
         canvas.writePng(png.toString());

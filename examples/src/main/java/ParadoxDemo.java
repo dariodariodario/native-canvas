@@ -91,7 +91,7 @@ public final class ParadoxDemo {
             Controls controls = new Controls(demo, canvas.width(), canvas.height());
             AnimatedToolkitDemo.run(canvas, controls.ui, elapsed -> {
                 if (!demo.paused) controls.time += elapsed * demo.speed;
-            }, 4, smoke);
+            }, smoke);
         }
     }
 

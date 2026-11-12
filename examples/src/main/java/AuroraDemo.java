@@ -62,7 +62,6 @@ public final class AuroraDemo {
                 stats.draw(canvas);
                 canvas.present();
                 if (smoke && elapsed(start) >= 1) return;
-                Thread.sleep(8);
             }
         }
     }

@@ -9,8 +9,7 @@ import nativecanvas.ui.Ui;
 final class AnimatedToolkitDemo {
     private AnimatedToolkitDemo() {}
 
-    static void run(Canvas canvas, Ui ui, DoubleConsumer advance, int frameDelay, boolean smoke)
-            throws InterruptedException {
+    static void run(Canvas canvas, Ui ui, DoubleConsumer advance, boolean smoke) {
         DemoStats stats = new DemoStats(canvas);
         canvas.setLiveResizeRedraw(() -> {
             ui.resize(canvas.width(), canvas.height());
@@ -26,7 +25,6 @@ final class AnimatedToolkitDemo {
                 draw(canvas, ui, stats);
                 canvas.present();
                 if (smoke && now - start >= 1_000_000_000L) return;
-                Thread.sleep(frameDelay);
             }
         } finally {
             canvas.setLiveResizeRedraw(null);

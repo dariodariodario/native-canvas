@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 using namespace skia::textlayout;
 
@@ -59,14 +60,40 @@ void SkiaText::setFont(Font& style, const char *text, size_t size) {
     style.setFontSize(points);
 }
 
-std::unique_ptr<Paragraph> SkiaText::layout(Font font, const char *text, size_t size) {
+Paragraph *SkiaText::layout(Font font, const char *text, size_t size) {
+    std::string_view value(text, size);
+    size_t hash = std::hash<std::string_view>{}(value);
+    auto matches = index.equal_range(hash);
+    for (auto entry = matches.first; entry != matches.second; ++entry) {
+        auto found = entry->second;
+        if (found->text == value && found->font == font) {
+            recent.splice(recent.begin(), recent, found);
+            return found->paragraph.get();
+        }
+    }
     ParagraphStyle style;
     style.setTextStyle(font);
     auto builder = ParagraphBuilder::make(style, fonts, unicode);
     builder->addText(text, size);
     auto result = builder->Build();
     result->layout(SK_ScalarInfinity);
-    return result;
+    if (size > 1024) {
+        uncached = std::move(result);
+        return uncached.get();
+    }
+    while (!recent.empty() && (recent.size() >= 512 || cachedBytes + size > 65536)) {
+        auto oldest = std::prev(recent.end());
+        auto bucket = index.equal_range(oldest->hash);
+        for (auto entry = bucket.first; entry != bucket.second; ++entry) {
+            if (entry->second == oldest) { index.erase(entry); break; }
+        }
+        cachedBytes -= oldest->text.size();
+        recent.erase(oldest);
+    }
+    recent.push_front({hash, std::move(font), std::string(value), std::move(result)});
+    index.emplace(hash, recent.begin());
+    cachedBytes += size;
+    return recent.front().paragraph.get();
 }
 
 void SkiaText::draw(SkCanvas& canvas, const Font& font, const SkPaint& paint,

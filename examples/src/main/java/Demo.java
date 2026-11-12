@@ -78,7 +78,6 @@ public final class Demo {
             }
             stats.draw(canvas);
             canvas.present();
-            Thread.sleep(16);
         } while (!smoke || elapsed(start) < 1);
     }
 

@@ -127,8 +127,14 @@ static SkPath localPath(Backend& b, SkCanvas& canvas) {
 
 static void clip(Backend& backend, SkCanvas& canvas, const SkPath& path) {
     canvas.clipPath(path, SkClipOp::kIntersect, true);
-    auto intersection = Op(backend.style.clip, path.makeTransform(canvas.getTotalMatrix()),
-                           kIntersect_SkPathOp);
+    SkPath devicePath = path.makeTransform(canvas.getTotalMatrix());
+    SkRect previousRect, nextRect;
+    if (backend.style.clip.isRect(&previousRect) && devicePath.isRect(&nextRect)) {
+        if (!previousRect.intersect(nextRect)) previousRect.setEmpty();
+        backend.style.clip = SkPath::Rect(previousRect);
+        return;
+    }
+    auto intersection = Op(backend.style.clip, devicePath, kIntersect_SkPathOp);
     if (intersection) backend.style.clip = std::move(*intersection);
     else backend.style.clip = SkPath::Rect(SkRect::Make(canvas.getDeviceClipBounds()));
 }
@@ -168,7 +174,9 @@ static void skia_draw(void *backend, DrawOperation op, const double *v, uint32_t
             } else clip(b, canvas, SkPath::Rect(rect));
             break;
         }
-        case DRAW_BEGIN_PATH: b.path.reset(); break;
+        case DRAW_BEGIN_PATH:
+            b.path.reset();
+            break;
         case DRAW_MOVE_TO: b.path.moveTo(point(0)); break;
         case DRAW_LINE_TO:
             if (b.path.isEmpty()) b.path.moveTo(point(0));
@@ -291,10 +299,20 @@ static const char *create(SDL_Window *window, RenderSize size, void **out) {
 }
 
 static const char *resize(SDL_Window *window, RenderSize size, void **target) {
-    void *next = nullptr;
-    if (const char *error = create(window, size, &next)) return error;
-    skia_destroy(*target);
-    *target = next;
+    auto& backend = *static_cast<Backend *>(*target);
+    auto info = SkImageInfo::Make(size.width, size.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+    auto surface = backend.context
+        ? SkSurfaces::RenderTarget(backend.context.get(), skgpu::Budgeted::kYes, info)
+        : SkSurfaces::Raster(info);
+    if (!surface) return "Cannot resize Skia target";
+    surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+    surface->getCanvas()->scale(size.scale_x, size.scale_y);
+    backend.surface = std::move(surface);
+    backend.style = DrawingStyle();
+    backend.style.clip = SkPath::Rect(SkRect::MakeWH(size.width, size.height));
+    backend.stack.clear();
+    backend.path.reset();
+    if (backend.layer) backend.layer.drawableSize = CGSizeMake(size.width, size.height);
     return nullptr;
 }
 

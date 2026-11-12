@@ -1,4 +1,7 @@
 #pragma once
+#include <list>
+#include <string>
+#include <unordered_map>
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skunicode/include/SkUnicode.h"
@@ -15,7 +18,19 @@ public:
     double caretX(const Font&, const char *, size_t, bool atEnd, size_t utf16Offset);
 
 private:
-    std::unique_ptr<skia::textlayout::Paragraph> layout(Font, const char *, size_t);
+    struct Entry {
+        size_t hash;
+        Font font;
+        std::string text;
+        std::unique_ptr<skia::textlayout::Paragraph> paragraph;
+    };
+    using Entries = std::list<Entry>;
+    skia::textlayout::Paragraph *layout(Font, const char *, size_t);
+    Entries recent;
+    std::unordered_multimap<size_t, Entries::iterator> index;
+    std::unique_ptr<skia::textlayout::Paragraph> uncached;
+    size_t cachedBytes = 0;
+
     sk_sp<skia::textlayout::FontCollection> fonts;
     sk_sp<SkUnicode> unicode;
 };

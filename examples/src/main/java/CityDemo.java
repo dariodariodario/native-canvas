@@ -60,7 +60,7 @@ public final class CityDemo {
                     .add(0, 0, scene).add(0, 1, new ScrollPane(panel, 1)), WIDTH, HEIGHT);
             AnimatedToolkitDemo.run(canvas, ui, elapsed -> {
                 if (!city.paused) city.time += elapsed * city.speed;
-            }, 8, smoke);
+            }, smoke);
         }
     }
 
