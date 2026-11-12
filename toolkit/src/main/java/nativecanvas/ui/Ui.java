@@ -170,17 +170,23 @@ public final class Ui {
      * Draws the initial frame, coalesces input redraws, and waits while idle.
      */
     public void run(Canvas canvas) {
+        run(canvas, ignored -> {});
+    }
+
+    /** Runs the window and draws an overlay after the widget tree on each frame. */
+    public void run(Canvas canvas, java.util.function.Consumer<Canvas> overlay) {
         resize(canvas.width(), canvas.height());
         canvas.setLiveResizeRedraw(() -> {
             resize(canvas.width(), canvas.height());
             draw(canvas);
+            overlay.accept(canvas);
         });
         try {
-            paintFrame(canvas);
+            paintFrame(canvas, overlay);
             while (true) {
                 canvas.waitForEvents();
                 if (!poll(canvas)) return;
-                if (repaintRequested) paintFrame(canvas);
+                if (repaintRequested) paintFrame(canvas, overlay);
             }
         } finally {
             try {
@@ -191,8 +197,9 @@ public final class Ui {
         }
     }
 
-    private void paintFrame(Canvas canvas) {
+    private void paintFrame(Canvas canvas, java.util.function.Consumer<Canvas> overlay) {
         draw(canvas);
+        overlay.accept(canvas);
         canvas.present();
         repaintRequested = false;
     }

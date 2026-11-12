@@ -1,6 +1,6 @@
 # Native Canvas
 
-Java 2D drawing with Cairo, Pango, and SDL3. Use a window for interactive
+Java 2D drawing with Skia (default), Cairo, Pango, and SDL3. Use a window for interactive
 drawing or an offscreen canvas for rendering PNGs. The API follows familiar
 Canvas 2D operations such as `fillRect`, `beginPath`, `save`, and `fillText`.
 
@@ -14,8 +14,8 @@ brew install cmake pkg-config cairo pango sdl3
 mvn package
 ```
 
-Maven invokes CMake to configure and compile the C code before packaging the
-Java library. The root build packages both modules:
+Maven invokes CMake to configure and compile the native code before packaging the
+Java library. The root build packages the library, toolkit, and examples:
 
 - `library/target/nativecanvas-0.1.0-SNAPSHOT.jar` contains the Java API.
 - `library/target/native/libnativecanvas.dylib` is the Apple Silicon JNI library.
@@ -76,7 +76,7 @@ try (Canvas canvas = Canvas.offscreen(640, 360)) {
 ```
 
 Import `nativecanvas.Canvas`. Colors are packed as `0xRRGGBBAA`. Text uses
-Pango font descriptions and alphabetic baseline coordinates. Call
+font descriptions such as `Sans Bold 18px` and alphabetic baseline coordinates. Call
 `measureText(text)` to get the logical width, height, baseline offset, and ink
 bounds in canvas units before drawing. It submits queued commands so the
 measurement uses the current font. Use
@@ -95,12 +95,12 @@ To consume keyboard, pointer, scroll, and close events, reuse one
 `Canvas.InputEvent` and loop on `pollEvent(event)` until it returns false.
 Handle `InputEvent.CLOSE` to exit. Use one polling method per loop because both
 consume the SDL event queue.
-`present()` submits pending commands and uploads the Cairo backing store to
-SDL. The backing store persists between frames.
+`present()` submits pending commands and presents the selected backend’s backing
+store. The backing store persists between frames.
 
 The Java API records primitive operations in a reusable direct buffer. JNI
-submits a batch when the buffer fills or when output is requested. Cairo
-rasterizes on the CPU and SDL presents the texture. The portable CMake target
+submits a batch when the buffer fills or when output is requested. Skia renders
+window contents through Metal; Cairo rasterizes on the CPU. The portable CMake target
 uses JNI headers and pkg-config. Apple Silicon macOS is the current build and
 runtime target.
 
@@ -312,12 +312,50 @@ java -Djava.library.path=library/target/native \
   CityDemo --png examples/target/city.png 6
 ```
 
-### Acceleration
+### Backends and acceleration
 
-SDL automatically selects an available presentation renderer. On the tested
-Apple Silicon Mac this is Metal. Query `canvas.presentationRenderer()` to
-see the selected backend. Offscreen canvases report `offscreen`.
+Skia is the default backend. Window drawing uses Skia Ganesh with Metal on
+Apple Silicon (`skia-metal`); offscreen drawing uses Skia’s CPU raster surface
+(`skia-raster`). Query `canvas.backend()` and `canvas.presentationRenderer()`.
+No silent CPU fallback is used if Metal initialization fails.
 
-Cairo rasterizes into CPU image surfaces before SDL uploads and presents
-them. The installed Cairo 1.18 build has no OpenGL backend. Hardware
-presentation does not imply GPU rasterization of Cairo paths.
+```java
+try (Canvas canvas = new Canvas("Skia", 1280, 800, true, Canvas.Backend.SKIA)) {
+    // Same drawing, measurements, input and toolkit API.
+}
+try (Canvas canvas = Canvas.offscreen(640, 480, Canvas.Backend.CAIRO)) {
+    // Explicit CPU Cairo backend.
+}
+```
+
+Use `-Dnativecanvas.backend=cairo` to switch existing demos/applications to Cairo;
+explicit constructor choices take precedence over the system property. Cairo
+still uses SDL’s available presentation renderer (usually Metal on macOS), but
+its drawing is CPU-based. Offscreen Cairo reports `offscreen`.
+
+Skia handles paths, measurements, drawing and PNGs with its own APIs. SkParagraph
+shapes and lays out text using the macOS Core Text font manager. Its font
+descriptions accept a family name, optional Bold, Italic or Oblique, and a
+size in pixels (`px`) or points (a bare number). Cairo uses Pango font
+descriptions and text layout. Text metrics can differ by backend. Skia
+uses antialiasing for both rendering-quality settings.
+
+CMake downloads a SHA-256-verified, pinned HumbleUI SkiaBuild archive
+[`m143-da51f0d60e-5`](https://github.com/HumbleUI/SkiaBuild/releases/tag/m143-da51f0d60e-5)
+on the first macOS arm64 build. Its static archives are linked into the JNI
+library. For an offline build, configure CMake with
+`-DSKIA_ROOT=/absolute/path/to/unpacked/archive` before running Maven.
+Skia uses a BSD-style license; redistribution must retain its and its bundled
+third-party dependency license notices.
+
+The native backend contract is `library/native/backend.h`. Each renderer owns its
+drawing state, surfaces, and images. The JNI layer decodes commands and delegates
+to the selected renderer. Other platforms
+currently build Cairo only. To disable Skia explicitly, configure with
+`-DNATIVECANVAS_SKIA=OFF` and select Cairo at runtime. Configure with `-DNATIVECANVAS_CAIRO=OFF`
+to build Skia without Cairo or Pango. Metal platform code lives
+in a separate Objective-C++ source file for future Windows/Linux backends.
+
+**Linking status:** Skia is statically linked. Cairo, Pango, SDL and their
+Homebrew dependencies are still dynamically linked, so the complete JNI library
+is not yet a standalone, fully statically linked distribution.

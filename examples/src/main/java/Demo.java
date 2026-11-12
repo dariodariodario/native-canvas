@@ -42,7 +42,11 @@ public final class Demo {
         Canvas.InputEvent event = new Canvas.InputEvent();
         long start = System.nanoTime();
         Scene scene = new Scene();
-        if (!offscreen) canvas.setLiveResizeRedraw(() -> scene.draw(canvas, sprite, elapsed(start)));
+        DemoStats stats = offscreen ? null : new DemoStats(canvas);
+        if (!offscreen) canvas.setLiveResizeRedraw(() -> {
+            scene.draw(canvas, sprite, elapsed(start));
+            stats.draw(canvas);
+        });
         do {
             while (!offscreen && canvas.pollEvent(event)) {
                 switch (event.type()) {
@@ -72,6 +76,7 @@ public final class Demo {
                 canvas.writePng(args.length > 1 ? args[1] : "demo.png");
                 return;
             }
+            stats.draw(canvas);
             canvas.present();
             Thread.sleep(16);
         } while (!smoke || elapsed(start) < 1);

@@ -16,6 +16,9 @@ public final class Canvas implements AutoCloseable {
     private final ByteBuffer commands = ByteBuffer.allocateDirect(256 * 1024)
             .order(ByteOrder.nativeOrder());
     private final Set<Image> images = new HashSet<>();
+    public enum Backend { CAIRO, SKIA }
+
+    private final Backend backend;
     private long handle;
     private int width, height;
     private Runnable liveResizeRedraw;
@@ -27,20 +30,35 @@ public final class Canvas implements AutoCloseable {
 
     /** Opens a window with optional user resizing. */
     public Canvas(String title, int width, int height, boolean resizable) {
-        this(utf8(title), width, height, resizable);
+        this(title, width, height, resizable, defaultBackend());
+    }
+
+    public Canvas(String title, int width, int height, boolean resizable, Backend backend) {
+        this(utf8(title), width, height, resizable, backend);
     }
 
     public static Canvas offscreen(int width, int height) {
-        return new Canvas((byte[]) null, width, height, false);
+        return offscreen(width, height, defaultBackend());
     }
 
-    private Canvas(byte[] title, int width, int height, boolean resizable) {
+    public static Canvas offscreen(int width, int height, Backend backend) {
+        return new Canvas((byte[]) null, width, height, false, backend);
+    }
+
+    private static Backend defaultBackend() {
+        return Backend.valueOf(System.getProperty("nativecanvas.backend", "skia").toUpperCase(java.util.Locale.ROOT));
+    }
+
+    public Backend backend() { return backend; }
+
+    private Canvas(byte[] title, int width, int height, boolean resizable, Backend backend) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid canvas size");
-        handle = open(title, width, height, resizable);
+        this.backend = java.util.Objects.requireNonNull(backend);
+        handle = open(title, width, height, resizable, backend.name().toLowerCase(java.util.Locale.ROOT));
         updateSize(logicalSize(handle));
     }
 
-    /** SDL presentation backend, or "offscreen" for an image surface. Cairo rasterization is CPU-based. */
+    /** Rendering target: skia-metal, skia-raster, an SDL renderer, or offscreen (Cairo). */
     public String presentationRenderer() {
         checkOpen();
         return rendererName(handle);
@@ -235,7 +253,7 @@ public final class Canvas implements AutoCloseable {
         commands.putInt(bytes.length).put(bytes);
     }
 
-    /** Sets a Pango font description, for example "Sans Bold 18px". */
+    /** Sets a font description, for example "Sans Bold 18px". */
     public void setFont(String description) { stringCommand(21, description, 0); }
 
     /** Draws text at the specified alphabetic baseline. */
@@ -305,7 +323,7 @@ public final class Canvas implements AutoCloseable {
     public Image loadImage(String filename) {
         checkOpen();
         int[] size = new int[2];
-        long imageHandle = loadPng(utf8(filename), size);
+        long imageHandle = loadPng(handle, utf8(filename), size);
         Image image = new Image(imageHandle, size[0], size[1]);
         images.add(image);
         return image;
@@ -340,7 +358,7 @@ public final class Canvas implements AutoCloseable {
         }
 
         private void releaseImage() {
-            destroyImage(handle);
+            destroyImage(Canvas.this.handle, handle);
             handle = 0;
         }
     }
@@ -452,7 +470,7 @@ public final class Canvas implements AutoCloseable {
     }
 
     private static native String rendererName(long handle);
-    private static native long open(byte[] title, int width, int height, boolean resizable);
+    private static native long open(byte[] title, int width, int height, boolean resizable, String backendName);
     private static native long logicalSize(long handle);
     private static native long resizeBacking(long handle);
     private static native void watchResize(long handle, Canvas canvas);
@@ -466,8 +484,8 @@ public final class Canvas implements AutoCloseable {
     private static native int nextEvent(long handle, ByteBuffer event);
     private static native void extents(long handle, int kind, double[] bounds);
     private static native void measure(long handle, byte[] text, double[] metrics);
-    private static native long loadPng(byte[] filename, int[] size);
-    private static native void destroyImage(long image);
+    private static native long loadPng(long canvas, byte[] filename, int[] size);
+    private static native void destroyImage(long canvas, long image);
     private static native void png(long handle, byte[] filename);
     private static native void destroy(long handle);
 }

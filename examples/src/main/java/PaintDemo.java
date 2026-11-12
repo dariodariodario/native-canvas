@@ -56,12 +56,14 @@ public final class PaintDemo {
             return;
         }
         try (Canvas canvas = new Canvas("Native Canvas Paint", WIDTH, HEIGHT)) {
+            DemoStats stats = new DemoStats(canvas, true);
             if (smoke) {
                 ui.poll(canvas);
                 ui.draw(canvas);
+                stats.draw(canvas);
                 canvas.present();
             } else {
-                ui.run(canvas);
+                ui.run(canvas, stats::draw);
             }
         }
     }

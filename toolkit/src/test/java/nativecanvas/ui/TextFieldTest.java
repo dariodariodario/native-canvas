@@ -40,7 +40,7 @@ class TextFieldTest {
         TextField field = new TextField("", value -> {});
         Button button = new Button("Next", () -> {});
         Ui ui = new Ui(new Column(0, 0).add(field).add(button), 200, 100);
-        try (Canvas canvas = new Canvas("Text input test", 200, 100)) {
+        try (Canvas canvas = new Canvas("Text input test", 200, 100, false, Canvas.Backend.CAIRO)) {
             ui.moveFocus(false);
             assertTrue(ui.poll(canvas));
             enqueueText();

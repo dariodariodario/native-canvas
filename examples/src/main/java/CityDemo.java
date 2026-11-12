@@ -58,9 +58,11 @@ public final class CityDemo {
             };
             Ui ui = new Ui(new Grid(new Track[]{Track.FILL, Track.size(250)}, new Track[]{Track.FILL}, 0, 0, 0)
                     .add(0, 0, scene).add(0, 1, new ScrollPane(panel, 1)), WIDTH, HEIGHT);
+            DemoStats stats = new DemoStats(canvas);
             canvas.setLiveResizeRedraw(() -> {
                 ui.resize(canvas.width(), canvas.height());
                 ui.draw(canvas);
+                stats.draw(canvas);
             });
             long previous = System.nanoTime(), start = previous;
             while (ui.poll(canvas)) {
@@ -68,6 +70,7 @@ public final class CityDemo {
                 if (!city.paused) city.time += (now - previous) / 1e9 * city.speed;
                 previous = now;
                 ui.draw(canvas);
+                stats.draw(canvas);
                 canvas.present();
                 if (smoke && now - start > 1_000_000_000L) break;
                 Thread.sleep(8);

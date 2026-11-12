@@ -74,6 +74,8 @@ public final class ParadoxDemo {
                     canvas.flush();
                     if (i >= 0) frames[i] = System.nanoTime() - startFrame;
                 }
+                double fps = frames.length * 1e9 / java.util.Arrays.stream(frames).sum();
+                System.out.printf("%s · %.1f FPS%n", DemoStats.renderer(canvas), fps);
                 java.util.Arrays.sort(frames);
                 System.out.printf("%s: p50 %.3f ms, p95 %.3f ms%n",
                         demo.fast ? "fast" : "default", frames[50] / 1e6, frames[94] / 1e6);
@@ -89,15 +91,18 @@ public final class ParadoxDemo {
             Controls controls = new Controls(demo, canvas.width(), canvas.height());
             long start = System.nanoTime();
             long previous = start;
+            DemoStats stats = new DemoStats(canvas);
             canvas.setLiveResizeRedraw(() -> {
                 controls.ui.resize(canvas.width(), canvas.height());
                 controls.ui.draw(canvas);
+                stats.draw(canvas);
             });
             while (controls.ui.poll(canvas)) {
                 long now = System.nanoTime();
                 if (!demo.paused) controls.time += (now - previous) / 1e9 * demo.speed;
                 previous = now;
                 controls.ui.draw(canvas);
+                stats.draw(canvas);
                 canvas.present();
                 if (smoke && seconds(start) >= 1) return;
                 Thread.sleep(4);

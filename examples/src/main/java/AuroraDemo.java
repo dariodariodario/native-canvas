@@ -52,9 +52,14 @@ public final class AuroraDemo {
                 return;
             }
             long start = System.nanoTime();
-            canvas.setLiveResizeRedraw(() -> scene.draw(canvas, elapsed(start)));
+            DemoStats stats = new DemoStats(canvas);
+            canvas.setLiveResizeRedraw(() -> {
+                scene.draw(canvas, elapsed(start));
+                stats.draw(canvas);
+            });
             while (canvas.pollEvents()) {
                 scene.draw(canvas, elapsed(start));
+                stats.draw(canvas);
                 canvas.present();
                 if (smoke && elapsed(start) >= 1) return;
                 Thread.sleep(8);

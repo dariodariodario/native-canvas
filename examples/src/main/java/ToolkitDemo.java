@@ -35,12 +35,14 @@ public final class ToolkitDemo {
                 canvas.writePng(args.length > 1 ? args[1] : "toolkit.png");
                 return;
             }
+            DemoStats stats = new DemoStats(canvas, true);
             if (smoke) {
                 ui.poll(canvas);
                 ui.draw(canvas);
+                stats.draw(canvas);
                 canvas.present();
             } else {
-                ui.run(canvas);
+                ui.run(canvas, stats::draw);
             }
         }
     }

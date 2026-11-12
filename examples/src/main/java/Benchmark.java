@@ -41,6 +41,8 @@ public final class Benchmark {
         long[] total = new long[frames];
         int count = workload == 0 ? 4_096 : workload == 1 ? 1000 : 8_192;
         String name = workload == 0 ? "text" : workload == 1 ? "shapes" : "images";
+        DemoStats stats = window ? new DemoStats(canvas) : null;
+        System.out.println(DemoStats.renderer(canvas));
         String[] labels = new String[256];
         for (int i = 0; i < labels.length; i++) labels[i] = "Item " + i + " · Ελληνικά";
         System.out.printf("%s (%,d draws/frame, %,d measured frames)%n", name, count, frames);
@@ -62,7 +64,12 @@ public final class Benchmark {
             }
             canvas.flush();
             long flushed = System.nanoTime();
-            if (window) canvas.present();
+            if (window) {
+                stats.draw(canvas);
+                canvas.flush();
+                flushed = System.nanoTime();
+                canvas.present();
+            }
             long shown = System.nanoTime();
             if (frame >= 0) {
                 draw[frame] = flushed - start;
@@ -75,6 +82,7 @@ public final class Benchmark {
         report("total", total);
         System.out.printf("  throughput %,.0f draws/s%n",
                 (double) count * frames * 1e9 / Arrays.stream(total).sum());
+        System.out.printf("  average %,.1f FPS%n", frames * 1e9 / Arrays.stream(total).sum());
         return true;
     }
 
