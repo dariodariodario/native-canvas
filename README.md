@@ -1,10 +1,22 @@
 # Native Canvas
 
-Java 2D drawing with Skia (default), Cairo, Pango, and SDL3. Use a window for interactive
-drawing or an offscreen canvas for rendering PNGs. The API follows familiar
-Canvas 2D operations such as `fillRect`, `beginPath`, `save`, and `fillText`.
+**Canvas-style 2D graphics for Java, powered by Skia and Cairo.**
 
-## Build on Apple Silicon
+![Java 8+ bytecode](https://img.shields.io/badge/bytecode-Java%208%2B-2563eb)
+![Build with Maven](https://img.shields.io/badge/build-Maven-c71a36)
+![Skia on Metal](https://img.shields.io/badge/Skia-Metal-7c3aed)
+
+[Quick start](#quick-start) · [Java API](#use-from-java) · [UI toolkit](#ui-toolkit) · [Demos](#demos) · [Native bundles](#bundle-native-libraries-in-a-jar)
+
+![Paradox Engine demo, a luminous torus knot surrounded by flowing particles](docs/images/paradox.png)
+
+*Paradox Engine, rendered by Native Canvas. [Run the demo](#paradox-engine).*
+
+- **Draw** paths, gradients, text, and PNG images through a familiar Canvas-style API.
+- **Render** to SDL3 windows or offscreen images. Skia uses Metal for windows on Apple Silicon, and Cairo provides a CPU backend.
+- **Build interfaces** with the optional Java toolkit for controls, layouts, and event-driven redraws.
+
+## Quick start
 
 Open the root `pom.xml` as a Maven project in your IDE. Install JDK 21,
 Maven, and the native build dependencies.
@@ -31,6 +43,24 @@ The default JAR targets Java 8 bytecode and needs a runtime with JNI and
 direct buffer support. Use `-Dmaven.compiler.release=21` to target Java 21
 bytecode or `-Dnative.skip=true` to build just the Java JAR. The offscreen demo
 also runs on a Java 21 image built with `jlink --add-modules java.base`.
+
+### Bundle native libraries in a JAR
+
+On Apple Silicon, run `mvn -Pnative-bundle package` with Python 3 and the
+macOS command-line tools installed. Maven produces
+`library/target/nativecanvas-0.1.0-SNAPSHOT-macos-aarch64.jar` alongside the
+Java API JAR. Put both on the runtime classpath, using classifier
+`macos-aarch64` for the native JAR when declaring a Maven dependency.
+`mvn -Pnative-bundle install` installs both artifacts in the local repository.
+
+Canvas extracts the JNI library and its bundled non-system dylibs to a private
+temporary directory and loads them automatically. If no matching bundle is
+present, Canvas uses the normal `java.library.path` lookup.
+
+The packaging profile currently supports macOS. For a native Intel Mac build,
+use `-Dnative.classifier=macos-x86_64`. The script checks that the classifier
+matches the compiled architecture. Linux and Windows require their own
+dependency packaging steps. macOS windows still need `-XstartOnFirstThread`.
 
 ### Run the examples
 
@@ -249,6 +279,16 @@ For a custom Canvas loop, use `pollEvent(event)` or `pollEvents()` and
 `present()` to render continuously. To render on demand, call
 `waitForEvents()` before draining the queue, then draw and present if
 your scene changed or you receive an `EXPOSED` or `RESIZE` event.
+
+## Demos
+
+| Demo | What it shows |
+| --- | --- |
+| [Paradox Engine](#paradox-engine) | A projected torus knot, thousands of particles, and live controls |
+| [City of Light](#city-of-light) | A procedural flyover with camera and lens controls |
+| [Aurora / Afterlight](#aurora--afterlight) | Animated ribbons, a star field, and layered scenery |
+| [Paint](#paint-example) | A small drawing app with toolkit controls and PNG export |
+| [Benchmark](#run-the-examples) | Text, shape, image, and presentation workloads |
 
 ### Aurora / Afterlight
 
