@@ -13,12 +13,73 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class CanvasTest {
     @TempDir Path temp;
 
     @BeforeEach void requireNativeLibrary() {
         assumeFalse(Boolean.getBoolean("native.skip"));
+    }
+
+    @Test void defaultsToAnAvailableBackend() {
+        String previous = System.clearProperty("nativecanvas.backend");
+        try (Canvas canvas = Canvas.offscreen(1, 1)) {
+            Canvas.Backend expected = Canvas.isBackendAvailable(Canvas.Backend.SKIA)
+                    ? Canvas.Backend.SKIA : Canvas.Backend.CAIRO;
+            assertEquals(expected, canvas.backend());
+        } finally {
+            if (previous != null) System.setProperty("nativecanvas.backend", previous);
+        }
+    }
+
+    @ParameterizedTest @EnumSource(Canvas.Backend.class)
+    void shapedCaretFollowsRightToLeftText(Canvas.Backend backend) {
+        assumeTrue(Canvas.isBackendAvailable(backend));
+        try (Canvas canvas = Canvas.offscreen(32, 32, backend)) {
+            canvas.setFont("Sans 18px");
+            assertTrue(canvas.textCaretX("אבג", 0) > canvas.textCaretX("אבג", 3));
+            assertTrue(canvas.textCaretX("abc", 0) < canvas.textCaretX("abc", 3));
+        }
+    }
+
+    @Test void skiaClipBoundsRetainUserSpaceGeometry() {
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.SKIA));
+        try (Canvas canvas = Canvas.offscreen(80, 80, Canvas.Backend.SKIA)) {
+            canvas.translate(30, 30);
+            canvas.rotate(Math.PI / 4);
+            canvas.save();
+            canvas.clipRect(0, 0, 10, 10);
+            Canvas.Bounds clip = canvas.clipBounds();
+            assertEquals(10, clip.width, 0.001);
+            assertEquals(10, clip.height, 0.001);
+            canvas.restore();
+            assertTrue(canvas.clipBounds().width > 10);
+        }
+    }
+
+    @ParameterizedTest @EnumSource(Canvas.Backend.class)
+    void signedPathRectanglesPreserveWinding(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
+        try (Canvas canvas = Canvas.offscreen(32, 32, backend)) {
+            canvas.rect(0, 0, 30, 30);
+            canvas.rect(20, 10, -10, 10);
+            canvas.fill();
+            BufferedImage result = pixels(canvas);
+            assertEquals(0xff000000, result.getRGB(5, 5));
+            assertEquals(0, result.getRGB(15, 15));
+        }
+    }
+
+    @Test void underflowingCairoScaleLeavesTheContextUsable() throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
+        try (Canvas canvas = Canvas.offscreen(2, 2, Canvas.Backend.CAIRO)) {
+            canvas.save();
+            canvas.scale(1e-200, 1e-200);
+            canvas.restore();
+            canvas.fillRect(0, 0, 2, 2);
+            assertEquals(0xff000000, pixels(canvas).getRGB(1, 1));
+        }
     }
 
     private BufferedImage pixels(Canvas canvas) throws Exception {
@@ -28,6 +89,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void paintsAndClearsPixelsAcrossAutomaticBatches(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(24, 16, backend)) {
             canvas.setFillStyle(0xff0000ff);
             for (int i = 0; i < 20_000; i++) canvas.fillRect(0, 0, 24, 16);
@@ -43,6 +105,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void savesTransformStyleAndClipWithoutDiscardingPath(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(32, 32, backend)) {
             canvas.rect(2, 2, 10, 10);
             canvas.setLineWidth(4);
@@ -69,6 +132,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void buildsAndStrokesCurvedPaths(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(30, 30, backend)) {
             canvas.beginPath();
             canvas.moveTo(2, 3);
@@ -83,6 +147,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void measuresQueuedFontAndRendersUnicodeText(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(200, 60, backend)) {
             canvas.setFont("Sans 12px");
             double small = canvas.measureText("Καλημέρα").width;
@@ -102,6 +167,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void loadsScalesAndCompositesPngAndEnforcesImageOwnership(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         Path sprite = temp.resolve("sprite.png");
         try (Canvas source = Canvas.offscreen(4, 4, backend);
              Canvas target = Canvas.offscreen(16, 16, backend)) {
@@ -124,6 +190,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void enforcesCanvasLifecycleAndThreadOwnership(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         assertThrows(IllegalArgumentException.class, () -> Canvas.offscreen(0, 1, backend));
         try (Canvas canvas = Canvas.offscreen(2, 2, backend)) {
             FutureTask<Void> task = new FutureTask<>(() -> { canvas.flush(); return null; });
@@ -137,6 +204,7 @@ class CanvasTest {
     }
 
     @Test void presentsAndPollsAWindowUsingSdlDummyVideo() {
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Test", 64, 48, false, Canvas.Backend.CAIRO)) {
             assertEquals("software", canvas.presentationRenderer());
             canvas.fillRect(0, 0, 64, 48);
@@ -146,6 +214,7 @@ class CanvasTest {
         }
     }
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void rectangleClipIntersectsExistingClipAndKeepsPath(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(20, 20, backend)) {
             canvas.rect(1, 2, 3, 4);
             canvas.clipRect(4, 4, 10, 10);
@@ -165,6 +234,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void restoresFontAndIgnoresRestoreUnderflow(Canvas.Backend backend) {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(20, 20, backend)) {
             assertEquals(backend == Canvas.Backend.SKIA ? "skia-raster" : "offscreen", canvas.presentationRenderer());
             canvas.restore();
@@ -179,6 +249,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void imageCloseIsIdempotentAndClosedImagesCannotBeQueued(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(4, 4, backend)) {
             Path png = temp.resolve("image.png");
             canvas.writePng(png.toString());
@@ -193,6 +264,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void immediateDrawingPreservesCurrentPathAndInvalidTransformsDoNotPoisonIt(Canvas.Backend backend) {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas canvas = Canvas.offscreen(20, 20, backend)) {
             canvas.rect(2, 3, 4, 5);
             canvas.scale(0, 1);
@@ -213,6 +285,7 @@ class CanvasTest {
 
     @Test void decodesSdlInputAndTracksCloseRequests() {
         System.loadLibrary("nativecanvas_test");
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Input test", 64, 48, false, Canvas.Backend.CAIRO)) {
             assertTrue(canvas.pollEvents());
             enqueueInput();
@@ -246,6 +319,7 @@ class CanvasTest {
         assertEquals(type, event.type());
     }
     @Test void resizesWindowBackingThroughBothPollingApis() throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Resize test", 64, 48, true, Canvas.Backend.CAIRO)) {
             assertEquals(64, canvas.width());
             assertEquals(48, canvas.height());
@@ -277,6 +351,7 @@ class CanvasTest {
         }
     }
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void linearGradientSnapshotsStopsAndSurvivesSaveRestore(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         Canvas.Gradient gradient = Canvas.linearGradient(0, 0, 20, 0)
                 .addColorStop(1, 0x0000ffff).addColorStop(0, 0xff0000ff);
         try (Canvas canvas = Canvas.offscreen(20, 20, backend)) {
@@ -299,6 +374,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void radialFillAndStrokeFollowTransformsAndClipping(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         Canvas.Gradient gradient = Canvas.radialGradient(0, 0, 1, 0, 0, 10)
                 .addColorStop(0, 0xffffffff).addColorStop(1, 0xffffff00);
         try (Canvas canvas = Canvas.offscreen(40, 30, backend)) {
@@ -319,6 +395,7 @@ class CanvasTest {
     }
 
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void gradientValidatesArgumentsAndEmptyGradientIsTransparent(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         assertThrows(IllegalArgumentException.class, () -> Canvas.linearGradient(0, 0, Double.NaN, 1));
         assertThrows(IllegalArgumentException.class, () -> Canvas.radialGradient(0, 0, -1, 0, 0, 2));
         Canvas.Gradient empty = Canvas.linearGradient(0, 0, 5, 5);
@@ -334,6 +411,7 @@ class CanvasTest {
 
     @Test void redrawsDuringExposeBeforePollingAndCanRemoveCallback() throws Exception {
         System.loadLibrary("nativecanvas_test");
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Live resize", 64, 48, true, Canvas.Backend.CAIRO)) {
             int[] calls = {0};
             canvas.setLiveResizeRedraw(() -> {
@@ -355,6 +433,7 @@ class CanvasTest {
         }
     }
     @ParameterizedTest @EnumSource(Canvas.Backend.class) void restoresAntialiasQualityWithDrawingState(Canvas.Backend backend) throws Exception {
+        assumeTrue(Canvas.isBackendAvailable(backend));
         try (Canvas reference = Canvas.offscreen(32, 32, backend); Canvas canvas = Canvas.offscreen(32, 32, backend)) {
             canvas.save();
             canvas.setAntialias(Canvas.Antialias.FAST);

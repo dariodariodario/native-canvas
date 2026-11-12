@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class UiTest {
     @Test void computesNestedColumnBoundsAndOwnsChildren() {
@@ -122,6 +123,7 @@ class UiTest {
         ScrollPane pane = new ScrollPane(new Column(4, 0).add(button).add(checkbox)
                 .add(new Label("More")), 80);
         Ui ui = new Ui(pane, 120, 80);
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Toolkit input test", 120, 80, false, Canvas.Backend.CAIRO)) {
             assertTrue(ui.poll(canvas));
             enqueueInput();
@@ -180,6 +182,7 @@ class UiTest {
         ScrollPane pane = new ScrollPane(content, 1);
         Grid root = new Grid(new Track[]{Track.FILL}, new Track[]{Track.AUTO, Track.FILL}, 4, 0, 4)
                 .add(0, 0, new Label("Header")).add(1, 0, pane);
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Resize toolkit", 140, 80, true, Canvas.Backend.CAIRO)) {
             Ui ui = new Ui(root, canvas.width(), canvas.height());
             ui.scroll(15, 50, 1000);
@@ -218,6 +221,7 @@ class UiTest {
                 }
             }
         };
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Event loop test", 100, 80, false, Canvas.Backend.CAIRO)) {
             assertTrue(canvas.pollEvents());
             new Ui(widget, 100, 80).run(canvas);

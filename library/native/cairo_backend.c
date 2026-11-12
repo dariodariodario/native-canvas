@@ -1,6 +1,7 @@
 #include "backend.h"
 #include <cairo.h>
 #include <pango/pangocairo.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -123,23 +124,23 @@ static void replace_pattern(Style *style, bool stroke, cairo_pattern_t *pattern)
     *slot = pattern;
 }
 
-static void rect(CairoTarget *c, int op, const double *v) {
+static void rect(CairoTarget *c, DrawOperation op, const double *v) {
     cairo_t *cr = c->cr;
-    if (op == 18) {
+    if (op == DRAW_ADD_RECT) {
         cairo_rectangle(cr, v[0], v[1], v[2], v[3]);
         return;
     }
     cairo_path_t *path = cairo_copy_path(cr);
     cairo_new_path(cr);
     cairo_rectangle(cr, v[0], v[1], v[2], v[3]);
-    if (op == 5) {
+    if (op == DRAW_CLEAR_RECT) {
         cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
         cairo_fill(cr);
         cairo_restore(cr);
-    } else if (op == 24) {
+    } else if (op == DRAW_CLIP_RECT) {
         cairo_clip(cr);
-    } else if (op == 4) {
+    } else if (op == DRAW_STROKE_RECT) {
         source(c, true);
         cairo_stroke(cr);
     } else {
@@ -156,26 +157,46 @@ static void layout_text(CairoTarget *c, const char *text, int size) {
     pango_cairo_update_layout(c->cr, c->layout);
 }
 
+static void transform(cairo_t *cr, DrawOperation op, const double *args) {
+    cairo_matrix_t candidate;
+    cairo_get_matrix(cr, &candidate);
+    switch (op) {
+        case DRAW_TRANSLATE: cairo_matrix_translate(&candidate, args[0], args[1]); break;
+        case DRAW_SCALE: cairo_matrix_scale(&candidate, args[0], args[1]); break;
+        case DRAW_ROTATE: cairo_matrix_rotate(&candidate, args[0]); break;
+        default: return;
+    }
+    double determinant = candidate.xx * candidate.yy - candidate.xy * candidate.yx;
+    if (determinant == 0 || !isfinite(determinant)) return;
+    cairo_matrix_t inverse = candidate;
+    if (cairo_matrix_invert(&inverse) != CAIRO_STATUS_SUCCESS) return;
+    if (!isfinite(candidate.xx) || !isfinite(candidate.xy) || !isfinite(candidate.x0)
+        || !isfinite(candidate.yx) || !isfinite(candidate.yy) || !isfinite(candidate.y0)
+        || !isfinite(inverse.xx) || !isfinite(inverse.xy) || !isfinite(inverse.x0)
+        || !isfinite(inverse.yx) || !isfinite(inverse.yy) || !isfinite(inverse.y0)) return;
+    cairo_set_matrix(cr, &candidate);
+}
+
 static const char *draw(void *target, const DrawCommand *command) {
     CairoTarget *c = target;
     cairo_t *cr = c->cr;
-    unsigned op = command->op;
+    DrawOperation op = command->op;
     uint32_t rgba = command->rgba, size = command->text_size;
     const char *value = command->text;
     void *image = command->image;
     double v[6];
     memcpy(v, command->args, sizeof(v));
     switch (op) {
-        case 1: replace_pattern(&c->style, false, NULL); c->style.fill = rgba; break;
-        case 2: replace_pattern(&c->style, true, NULL); c->style.stroke = rgba; break;
-        case 3: case 4: case 5: case 18: case 24: rect(c, op, v); break;
-        case 6: cairo_new_path(cr); break;
-        case 7: cairo_move_to(cr, v[0], v[1]); break;
-        case 8: cairo_line_to(cr, v[0], v[1]); break;
-        case 9: cairo_close_path(cr); break;
-        case 10: source(c, false); cairo_fill_preserve(cr); break;
-        case 11: source(c, true); cairo_stroke_preserve(cr); break;
-        case 12: {
+        case DRAW_SET_FILL_COLOR: replace_pattern(&c->style, false, NULL); c->style.fill = rgba; break;
+        case DRAW_SET_STROKE_COLOR: replace_pattern(&c->style, true, NULL); c->style.stroke = rgba; break;
+        case DRAW_FILL_RECT: case DRAW_STROKE_RECT: case DRAW_CLEAR_RECT: case DRAW_ADD_RECT: case DRAW_CLIP_RECT: rect(c, op, v); break;
+        case DRAW_BEGIN_PATH: cairo_new_path(cr); break;
+        case DRAW_MOVE_TO: cairo_move_to(cr, v[0], v[1]); break;
+        case DRAW_LINE_TO: cairo_line_to(cr, v[0], v[1]); break;
+        case DRAW_CLOSE_PATH: cairo_close_path(cr); break;
+        case DRAW_FILL_PATH: source(c, false); cairo_fill_preserve(cr); break;
+        case DRAW_STROKE_PATH: source(c, true); cairo_stroke_preserve(cr); break;
+        case DRAW_SAVE: {
             Style *saved = malloc(sizeof(*saved));
             if (!saved) return "Cannot save drawing state";
             *saved = c->style;
@@ -186,7 +207,7 @@ static const char *draw(void *target, const DrawCommand *command) {
             cairo_save(cr);
             break;
         }
-        case 13: {
+        case DRAW_RESTORE: {
             Style *saved = c->style.previous;
             if (saved) {
                 release_style(&c->style);
@@ -196,20 +217,20 @@ static const char *draw(void *target, const DrawCommand *command) {
             }
             break;
         }
-        case 14: cairo_translate(cr, v[0], v[1]); break;
-        case 15: cairo_scale(cr, v[0], v[1]); break;
-        case 16: cairo_rotate(cr, v[0]); break;
-        case 17: cairo_set_line_width(cr, v[0]); break;
-        case 19: cairo_clip_preserve(cr); break;
-        case 20: cairo_curve_to(cr, v[0], v[1], v[2], v[3], v[4], v[5]); break;
-        case 21: {
+        case DRAW_TRANSLATE: case DRAW_SCALE: case DRAW_ROTATE:
+            transform(cr, op, v);
+            break;
+        case DRAW_SET_LINE_WIDTH: cairo_set_line_width(cr, v[0]); break;
+        case DRAW_CLIP_PATH: cairo_clip_preserve(cr); break;
+        case DRAW_CUBIC_TO: cairo_curve_to(cr, v[0], v[1], v[2], v[3], v[4], v[5]); break;
+        case DRAW_SET_FONT: {
             char *description = g_strndup(value, size);
             pango_font_description_free(c->style.font);
             c->style.font = pango_font_description_from_string(description);
             g_free(description);
             break;
         }
-        case 22: {
+        case DRAW_FILL_TEXT: {
             source(c, false);
             layout_text(c, value, (int)size);
             cairo_path_t *path = cairo_copy_path(cr);
@@ -221,23 +242,19 @@ static const char *draw(void *target, const DrawCommand *command) {
             cairo_path_destroy(path);
             break;
         }
-        case 29:
+        case DRAW_SET_ANTIALIAS:
             cairo_set_antialias(cr, v[0] == 1 ? CAIRO_ANTIALIAS_FAST : CAIRO_ANTIALIAS_DEFAULT);
             break;
-        case 25: case 26: case 27: case 28: {
+        case DRAW_SET_FILL_LINEAR: case DRAW_SET_STROKE_LINEAR: case DRAW_SET_FILL_RADIAL: case DRAW_SET_STROKE_RADIAL: {
             uint32_t count = command->stop_count;
-            const unsigned char *stop_data = command->stops;
             cairo_pattern_t *pattern;
             if (count == 0) pattern = cairo_pattern_create_rgba(0, 0, 0, 0);
-            else if (op < 27) pattern = cairo_pattern_create_linear(v[0], v[1], v[2], v[3]);
+            else if (op < DRAW_SET_FILL_RADIAL) pattern = cairo_pattern_create_linear(v[0], v[1], v[2], v[3]);
             else pattern = cairo_pattern_create_radial(v[0], v[1], v[2], v[3], v[4], v[5]);
             cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
             for (uint32_t i = 0; i < count; i++) {
-                double offset;
-                uint32_t stop;
-                memcpy(&offset, stop_data, sizeof(offset));
-                memcpy(&stop, stop_data + sizeof(offset), sizeof(stop));
-                stop_data += sizeof(offset) + sizeof(stop);
+                double offset = command->stops[i].offset;
+                uint32_t stop = command->stops[i].rgba;
                 cairo_pattern_add_color_stop_rgba(pattern, offset, (stop >> 24) / 255.0,
                     ((stop >> 16) & 255) / 255.0, ((stop >> 8) & 255) / 255.0, (stop & 255) / 255.0);
             }
@@ -246,10 +263,10 @@ static const char *draw(void *target, const DrawCommand *command) {
                 cairo_pattern_destroy(pattern);
                 return cairo_status_to_string(status);
             }
-            replace_pattern(&c->style, op == 26 || op == 28, pattern);
+            replace_pattern(&c->style, op == DRAW_SET_STROKE_LINEAR || op == DRAW_SET_STROKE_RADIAL, pattern);
             break;
         }
-        case 23: {
+        case DRAW_IMAGE: {
             if (v[2] == 0 || v[3] == 0) break;
             if (v[2] < 0) { v[0] += v[2]; v[2] = -v[2]; }
             if (v[3] < 0) { v[1] += v[3]; v[3] = -v[3]; }
@@ -332,6 +349,14 @@ static void measure(void *target, const char *text, size_t size, double *output)
 }
 
 
+static double caret_x(void *target, const char *text, size_t size, size_t byte_offset, size_t utf16_offset) {
+    CairoTarget *c = target;
+    layout_text(c, text, (int)size);
+    PangoRectangle strong;
+    pango_layout_get_cursor_pos(c->layout, (int)byte_offset, &strong, NULL);
+    return (double)strong.x / PANGO_SCALE;
+}
+
 static const char *load_image(const char *path, int *size, void **out) {
     cairo_surface_t *image = cairo_image_surface_create_from_png(path);
     cairo_status_t status = cairo_surface_status(image);
@@ -352,6 +377,6 @@ static void destroy_image(void *image) {
 const CanvasBackend cairo_backend = {
     .name = "cairo", .create = create, .resize = resize, .destroy = destroy,
     .renderer = renderer, .draw = draw, .finish_batch = finish_batch,
-    .present = present, .write_png = write_png, .extents = extents, .measure = measure,
+    .present = present, .write_png = write_png, .extents = extents, .measure = measure, .caret_x = caret_x,
     .load_image = load_image, .destroy_image = destroy_image
 };

@@ -2,9 +2,11 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <jni.h>
-#include "backend.h"
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
+#include "command_buffer.h"
 #include <stdint.h>
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,17 +100,38 @@ JNIEXPORT jstring JNICALL Java_nativecanvas_Canvas_rendererName
     return (*env)->NewStringUTF(env, name);
 }
 
+static const CanvasBackend *find_backend(JNIEnv *env, jstring backend_name) {
+    const char *name = (*env)->GetStringUTFChars(env, backend_name, NULL);
+    if (!name) return NULL;
+    const CanvasBackend *backend = canvas_backend(name);
+    (*env)->ReleaseStringUTFChars(env, backend_name, name);
+    return backend;
+}
+
+JNIEXPORT jboolean JNICALL Java_nativecanvas_Canvas_hasBackend
+  (JNIEnv *env, jclass type, jstring backend_name) {
+    return find_backend(env, backend_name) != NULL;
+}
+
+static bool on_window_thread(void) {
+#ifdef __APPLE__
+    return pthread_main_np() != 0;
+#else
+    return SDL_IsMainThread();
+#endif
+}
+
 JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_open
   (JNIEnv *env, jclass type, jbyteArray title, jint width, jint height, jboolean resizable, jstring backend_name) {
     Canvas *c = calloc(1, sizeof(*c));
     if (!c) { fail(env, "Cannot allocate canvas"); return 0; }
-    const char *name = (*env)->GetStringUTFChars(env, backend_name, NULL);
-    if (!name) goto error;
-    c->backend = canvas_backend(name);
-    (*env)->ReleaseStringUTFChars(env, backend_name, name);
-    if (!c->backend) { fail(env, "Rendering backend is unavailable in this build"); goto error; }
+    c->backend = find_backend(env, backend_name);
+    if (!c->backend) {
+        if (!(*env)->ExceptionCheck(env)) fail(env, "Rendering backend is unavailable in this build");
+        goto error;
+    }
     if (title) {
-        if (!SDL_IsMainThread() || window_canvas) {
+        if (!on_window_thread() || window_canvas) {
             fail(env, "Open one SDL window on the main thread (use -XstartOnFirstThread on macOS)");
             goto error;
         }
@@ -136,83 +159,16 @@ error:
     return 0;
 }
 
-static uint32_t read_uint(const unsigned char **p) {
-    uint32_t value;
-    memcpy(&value, *p, sizeof(value));
-    *p += sizeof(value);
-    return value;
-}
-
-static double read_double(const unsigned char **p) {
-    double value;
-    memcpy(&value, *p, sizeof(value));
-    *p += sizeof(value);
-    return value;
-}
-
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_draw
   (JNIEnv *env, jclass type, jlong handle, jobject buffer, jint length) {
     Canvas *c = (Canvas *)(intptr_t)handle;
-    const unsigned char *p = (*env)->GetDirectBufferAddress(env, buffer);
-    if (!p || length < 0 || length > (*env)->GetDirectBufferCapacity(env, buffer)) {
+    const unsigned char *data = (*env)->GetDirectBufferAddress(env, buffer);
+    if (!data || length < 0 || length > (*env)->GetDirectBufferCapacity(env, buffer)) {
         fail(env, "Invalid command buffer");
         return;
     }
-    const unsigned char *end = p + length;
-    static const unsigned char arity[] = {
-        0, 0, 0, 4, 4, 4, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 1, 1, 4, 0, 6, 0, 2, 4, 4, 4, 4, 6, 6, 1
-    };
-    while (p < end) {
-        unsigned op = *p++;
-        if (op == 0 || op >= sizeof(arity)) goto malformed;
-        const char *value = NULL;
-        uint32_t size = 0, rgba = 0;
-        if (op == 1 || op == 2 || op == 21 || op == 22) {
-            if (end - p < 4) goto malformed;
-            uint32_t word = read_uint(&p);
-            if (op <= 2) rgba = word;
-            else {
-                size = word;
-                if ((size_t)(end - p) < size) goto malformed;
-                value = (const char *)p;
-                p += size;
-            }
-        }
-        void *image = NULL;
-        if (op == 23) {
-            if (end - p < 8) goto malformed;
-            uint64_t address;
-            memcpy(&address, p, sizeof(address));
-            p += sizeof(address);
-            image = (void *)(uintptr_t)address;
-        }
-        if ((size_t)(end - p) < arity[op] * sizeof(double)) goto malformed;
-        double v[6];
-        bool finite = true;
-        for (unsigned i = 0; i < arity[op]; ++i) {
-            v[i] = read_double(&p);
-            finite = finite && isfinite(v[i]);
-        }
-        DrawCommand command = {.op = op, .rgba = rgba, .text = value, .text_size = size, .image = image};
-        memcpy(command.args, v, arity[op] * sizeof(double));
-        if (op >= 25 && op <= 28) {
-            if (end - p < 4) goto malformed;
-            command.stop_count = read_uint(&p);
-            if (command.stop_count > (size_t)(end - p) / 12) goto malformed;
-            command.stops = p;
-            p += (size_t)command.stop_count * 12;
-        }
-        if (!finite) continue;
-        const char *error = c->backend->draw(c->target, &command);
-        if (error) { fail(env, error); return; }
-    }
-    if (c->backend->finish_batch) {
-        const char *error = c->backend->finish_batch(c->target);
-        if (error) fail(env, error);
-    }
-    return;
-malformed:
-    fail(env, "Malformed drawing command");
+    const char *error = draw_batch(c->backend, c->target, data, (size_t)length);
+    if (error) fail(env, error);
 }
 
 JNIEXPORT void JNICALL Java_nativecanvas_Canvas_show(JNIEnv *env, jclass type, jlong handle) {
@@ -361,6 +317,7 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_textInputEnabled
   (JNIEnv *env, jclass type, jlong handle, jboolean enabled) {
     Canvas *c = (Canvas *)(intptr_t)handle;
     if (!c->window) { fail(env, "Canvas has no window"); return; }
+    if (SDL_TextInputActive(c->window) == (enabled != JNI_FALSE)) return;
     bool ok = enabled ? SDL_StartTextInput(c->window) : SDL_StopTextInput(c->window);
     if (!ok) fail(env, SDL_GetError());
 }
@@ -431,6 +388,17 @@ JNIEXPORT void JNICALL Java_nativecanvas_Canvas_measure
     c->backend->measure(c->target, text, (*env)->GetArrayLength(env, bytes), metrics);
     free(text);
     (*env)->SetDoubleArrayRegion(env, output, 0, 7, metrics);
+}
+
+JNIEXPORT jdouble JNICALL Java_nativecanvas_Canvas_caretPosition
+  (JNIEnv *env, jclass type, jlong handle, jbyteArray bytes, jint byte_offset, jint utf16_offset) {
+    Canvas *c = (Canvas *)(intptr_t)handle;
+    char *text = string(env, bytes);
+    if (!text) return 0;
+    jsize size = (*env)->GetArrayLength(env, bytes);
+    double x = c->backend->caret_x(c->target, text, size, byte_offset, utf16_offset);
+    free(text);
+    return x;
 }
 
 JNIEXPORT jlong JNICALL Java_nativecanvas_Canvas_loadPng

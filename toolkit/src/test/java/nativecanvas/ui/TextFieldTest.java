@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class TextFieldTest {
     private static native void enqueueText();
@@ -40,6 +41,7 @@ class TextFieldTest {
         TextField field = new TextField("", value -> {});
         Button button = new Button("Next", () -> {});
         Ui ui = new Ui(new Column(0, 0).add(field).add(button), 200, 100);
+        assumeTrue(Canvas.isBackendAvailable(Canvas.Backend.CAIRO));
         try (Canvas canvas = new Canvas("Text input test", 200, 100, false, Canvas.Backend.CAIRO)) {
             ui.moveFocus(false);
             assertTrue(ui.poll(canvas));

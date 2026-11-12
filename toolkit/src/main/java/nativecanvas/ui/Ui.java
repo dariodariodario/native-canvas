@@ -3,6 +3,7 @@ package nativecanvas.ui;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 import nativecanvas.Canvas;
 
 /** Owns layout, focus, and input dispatch for one widget tree. */
@@ -10,7 +11,6 @@ public final class Ui {
     private final Widget root;
     private final Canvas.InputEvent event = new Canvas.InputEvent();
     private Control focused, hovered, pressed;
-    private boolean textInputEnabled;
     private boolean repaintRequested = true;
     private double pointerX = -1, pointerY = -1;
 
@@ -116,11 +116,11 @@ public final class Ui {
     /** Reads SDL input. Returns false on a window close request. */
     public boolean poll(Canvas canvas) {
         layout();
-        syncTextInput(canvas, focused instanceof TextField);
+        canvas.setTextInputEnabled(focused instanceof TextField);
         while (canvas.pollEvent(event)) {
             switch (event.type()) {
                 case Canvas.InputEvent.CLOSE:
-                    syncTextInput(canvas, false);
+                    canvas.setTextInputEnabled(false);
                     return false;
                 case Canvas.InputEvent.RESIZE:
                     resize(event.width(), event.height());
@@ -160,7 +160,7 @@ public final class Ui {
                     break;
                 default: break;
             }
-            syncTextInput(canvas, focused instanceof TextField);
+            canvas.setTextInputEnabled(focused instanceof TextField);
         }
         return true;
     }
@@ -174,7 +174,8 @@ public final class Ui {
     }
 
     /** Runs the window and draws an overlay after the widget tree on each frame. */
-    public void run(Canvas canvas, java.util.function.Consumer<Canvas> overlay) {
+    public void run(Canvas canvas, Consumer<Canvas> overlay) {
+        Objects.requireNonNull(overlay);
         resize(canvas.width(), canvas.height());
         canvas.setLiveResizeRedraw(() -> {
             resize(canvas.width(), canvas.height());
@@ -190,34 +191,31 @@ public final class Ui {
             }
         } finally {
             try {
-                syncTextInput(canvas, false);
+                canvas.setTextInputEnabled(false);
             } finally {
                 canvas.setLiveResizeRedraw(null);
             }
         }
     }
 
-    private void paintFrame(Canvas canvas, java.util.function.Consumer<Canvas> overlay) {
+    private void paintFrame(Canvas canvas, Consumer<Canvas> overlay) {
         draw(canvas);
         overlay.accept(canvas);
         canvas.present();
         repaintRequested = false;
     }
 
-    private void syncTextInput(Canvas canvas, boolean enabled) {
-        if (enabled == textInputEnabled) return;
-        canvas.setTextInputEnabled(enabled);
-        textInputEnabled = enabled;
-    }
-
     /** Draws the widget tree in the current canvas coordinates. */
     public void draw(Canvas canvas) {
         layout();
         canvas.save();
-        canvas.setFillStyle(0x18212cff);
-        canvas.fillRect(0, 0, root.width(), root.height());
-        canvas.setFont("Sans 15px");
-        root.paint(canvas);
-        canvas.restore();
+        try {
+            canvas.setFillStyle(0x18212cff);
+            canvas.fillRect(0, 0, root.width(), root.height());
+            canvas.setFont("Sans 15px");
+            root.paint(canvas);
+        } finally {
+            canvas.restore();
+        }
     }
 }

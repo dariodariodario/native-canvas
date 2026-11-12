@@ -54,11 +54,11 @@ java -Djava.library.path=library/target/native \
 ```
 
 Run `Benchmark` with the same classpath to measure offscreen text, shape, and
-image workloads. Each frame draws 4,096 text labels, 100,000 translucent
+image workloads. Each frame draws 4,096 text labels, 1,000 translucent
 rectangles, or 8,192 scaled sprites, depending on the workload. Each workload
 runs 180 warm-up frames and 3,000 measured frames. Set the VM option
 `-Dbenchmark.frames=60` for a shorter run at the same draw counts. The draw
-time includes command recording and Cairo rasterization, including automatic
+time includes command recording and rasterization with the selected backend, including automatic
 flushes when the command buffer fills. Pass `--window` and add `-XstartOnFirstThread` to measure SDL
 presentation as well.
 
@@ -279,21 +279,20 @@ java -Djava.library.path=library/target/native \
 
 ### Paradox performance
 
-Paradox uses `Canvas.Antialias.FAST` for its geometry. Use **Fast edge rendering** in the sidebar to toggle
-Cairo's default edge quality. The fast mode trades some edge smoothness for
-lower rasterization cost. Canvas itself defaults to `Antialias.DEFAULT`.
-The setting participates in `save()` and `restore()`.
+Paradox uses `Canvas.Antialias.FAST` for its geometry. With Cairo, **Fast edge
+rendering** trades edge smoothness for lower rasterization cost. The setting
+participates in `save()` and `restore()`. Skia uses antialiasing in both modes.
 
-Measure the actual scene offscreen at 1280×800, with 30 warm-up frames and
+Compare Cairo’s two edge-quality settings offscreen at 1280×800, with 30 warm-up frames and
 100 measured frames:
 
 ```sh
-java -Djava.library.path=library/target/native   -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark default
-java -Djava.library.path=library/target/native   -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark fast
+java -Dnativecanvas.backend=cairo -Djava.library.path=library/target/native -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark default
+java -Dnativecanvas.backend=cairo -Djava.library.path=library/target/native -cp examples/target/classes:toolkit/target/classes:library/target/classes ParadoxDemo --benchmark fast
 ```
 
-These timings include Java scene generation, command submission, and Cairo
-rasterization. Window texture upload and presentation are outside this measurement.
+These timings include Java scene generation, command submission, and rasterization by the
+selected backend. Window texture upload and presentation are outside this measurement.
 
 ### City of Light
 
@@ -344,17 +343,23 @@ CMake downloads a SHA-256-verified, pinned HumbleUI SkiaBuild archive
 [`m143-da51f0d60e-5`](https://github.com/HumbleUI/SkiaBuild/releases/tag/m143-da51f0d60e-5)
 on the first macOS arm64 build. Its static archives are linked into the JNI
 library. For an offline build, configure CMake with
-`-DSKIA_ROOT=/absolute/path/to/unpacked/archive` before running Maven.
+`cmake -S library -B library/target/native -DSKIA_ROOT=/absolute/path/to/unpacked/archive`
+before running Maven.
 Skia uses a BSD-style license; redistribution must retain its and its bundled
 third-party dependency license notices.
 
 The native backend contract is `library/native/backend.h`. Each renderer owns its
 drawing state, surfaces, and images. The JNI layer decodes commands and delegates
 to the selected renderer. Other platforms
-currently build Cairo only. To disable Skia explicitly, configure with
-`-DNATIVECANVAS_SKIA=OFF` and select Cairo at runtime. Configure with `-DNATIVECANVAS_CAIRO=OFF`
+currently build Cairo only. The default selects Skia when it is compiled in
+and Cairo otherwise. To disable Skia explicitly, configure with
+`-DNATIVECANVAS_SKIA=OFF`. Configure with `-DNATIVECANVAS_CAIRO=OFF`
 to build Skia without Cairo or Pango. Metal platform code lives
 in a separate Objective-C++ source file for future Windows/Linux backends.
+
+On an Apple Silicon desktop, run the real-window integration test with
+`mvn -pl library -Dtest=MetalWindowTest -Dnative.test.video.driver=cocoa test`.
+The normal test suite uses SDL's dummy driver.
 
 **Linking status:** Skia is statically linked. Cairo, Pango, SDL and their
 Homebrew dependencies are still dynamically linked, so the complete JNI library

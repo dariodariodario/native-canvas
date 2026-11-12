@@ -39,11 +39,11 @@ public final class CityDemo {
             Column panel = new Column(14, 8)
                     .add(new Label("CITY OF LIGHT").setFont("Sans Bold", 18).setColor(0xffcda2ff))
                     .add(new Checkbox("Pause flight", false, value -> city.paused = value))
-                    .add(altitude).add(adjust(() -> city.altitude = Math.max(110, city.altitude - 25),
+                    .add(altitude).add(AnimatedToolkitDemo.adjustmentButtons(() -> city.altitude = Math.max(110, city.altitude - 25),
                             () -> city.altitude = Math.min(650, city.altitude + 25), refresh))
-                    .add(lens).add(adjust(() -> city.lens = Math.max(-0.2, city.lens - 0.04),
+                    .add(lens).add(AnimatedToolkitDemo.adjustmentButtons(() -> city.lens = Math.max(-0.2, city.lens - 0.04),
                             () -> city.lens = Math.min(0.5, city.lens + 0.04), refresh))
-                    .add(speed).add(adjust(() -> city.speed = Math.max(0.25, city.speed - 0.25),
+                    .add(speed).add(AnimatedToolkitDemo.adjustmentButtons(() -> city.speed = Math.max(0.25, city.speed - 0.25),
                             () -> city.speed = Math.min(4, city.speed + 0.25), refresh));
             Widget scene = new Widget() {
                 @Override public double preferredHeight(double width) { return 0; }
@@ -58,29 +58,10 @@ public final class CityDemo {
             };
             Ui ui = new Ui(new Grid(new Track[]{Track.FILL, Track.size(250)}, new Track[]{Track.FILL}, 0, 0, 0)
                     .add(0, 0, scene).add(0, 1, new ScrollPane(panel, 1)), WIDTH, HEIGHT);
-            DemoStats stats = new DemoStats(canvas);
-            canvas.setLiveResizeRedraw(() -> {
-                ui.resize(canvas.width(), canvas.height());
-                ui.draw(canvas);
-                stats.draw(canvas);
-            });
-            long previous = System.nanoTime(), start = previous;
-            while (ui.poll(canvas)) {
-                long now = System.nanoTime();
-                if (!city.paused) city.time += (now - previous) / 1e9 * city.speed;
-                previous = now;
-                ui.draw(canvas);
-                stats.draw(canvas);
-                canvas.present();
-                if (smoke && now - start > 1_000_000_000L) break;
-                Thread.sleep(8);
-            }
+            AnimatedToolkitDemo.run(canvas, ui, elapsed -> {
+                if (!city.paused) city.time += elapsed * city.speed;
+            }, 8, smoke);
         }
-    }
-
-    private static Row adjust(Runnable minus, Runnable plus, Runnable refresh) {
-        return new Row(0, 8).add(new Button("−", () -> { minus.run(); refresh.run(); }), Track.FILL)
-                .add(new Button("+", () -> { plus.run(); refresh.run(); }), Track.FILL);
     }
 
     private void render(Canvas c, int width, int height) {

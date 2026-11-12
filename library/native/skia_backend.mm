@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "skia_text.h"
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <SDL3/SDL_metal.h>
@@ -8,7 +9,6 @@
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkData.h"
-#include "include/core/SkFont.h"
 #include "include/pathops/SkPathOps.h"
 #include "include/effects/SkGradientShader.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
@@ -23,20 +23,12 @@
 #include "include/core/SkStream.h"
 #include "include/codec/SkPngDecoder.h"
 #include "include/encode/SkPngEncoder.h"
-#include "include/ports/SkFontMgr_mac_ct.h"
-#include "modules/skparagraph/include/FontCollection.h"
-#include "modules/skparagraph/include/ParagraphBuilder.h"
-#include "modules/skunicode/include/SkUnicode_icu.h"
 #include <algorithm>
-#include <cmath>
-#include <sstream>
-#include <string>
-
-using namespace skia::textlayout;
 
 struct DrawingStyle {
     SkPaint fill, stroke;
-    TextStyle text;
+    SkiaText::Font font = SkiaText::defaultFont();
+    SkPath clip;
 
     DrawingStyle() {
         fill.setAntiAlias(true);
@@ -44,8 +36,6 @@ struct DrawingStyle {
         stroke.setStyle(SkPaint::kStroke_Style);
         stroke.setStrokeWidth(1);
         stroke.setStrokeMiter(10);
-        text.setFontFamilies({SkString("Helvetica")});
-        text.setFontSize(10);
     }
 };
 
@@ -59,8 +49,7 @@ struct Backend {
     DrawingStyle style;
     std::vector<DrawingStyle> stack;
     SkPathBuilder path;
-    sk_sp<FontCollection> fonts = sk_make_sp<FontCollection>();
-    sk_sp<SkUnicode> unicode = SkUnicodes::ICU::Make();
+    SkiaText text;
 };
 
 static void skia_destroy(void *backend);
@@ -68,7 +57,6 @@ static void skia_destroy(void *backend);
 static void *skia_create(SDL_Window *window, int width, int height, double sx, double sy) {
     @autoreleasepool {
         auto *b = new Backend();
-        b->fonts->setDefaultFontManager(SkFontMgr_New_CoreText(nullptr));
         SkImageInfo info = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
         if (window) {
             b->view = SDL_Metal_CreateView(window);
@@ -89,6 +77,7 @@ static void *skia_create(SDL_Window *window, int width, int height, double sx, d
             b->surface = SkSurfaces::Raster(info);
         }
         if (!b->surface) { skia_destroy(b); return nullptr; }
+        b->style.clip = SkPath::Rect(SkRect::MakeWH(width, height));
         b->surface->getCanvas()->clear(SK_ColorTRANSPARENT);
         b->surface->getCanvas()->scale(sx, sy);
         return b;
@@ -108,7 +97,7 @@ static bool skia_present(void *backend) {
     @autoreleasepool {
         auto *b = static_cast<Backend *>(backend);
         id<CAMetalDrawable> drawable = [b->layer nextDrawable];
-        if (!drawable) return false;
+        if (!drawable) return true;
         GrMtlTextureInfo texture;
         texture.fTexture.retain((__bridge const void *)drawable.texture);
         auto target = GrBackendRenderTargets::MakeMtl((int)drawable.texture.width,
@@ -130,62 +119,21 @@ static SkColor color(uint32_t rgba) {
     return (rgba >> 8) | (rgba << 24);
 }
 
-static void setFont(TextStyle& style, const char *text, size_t size) {
-    std::istringstream words(std::string(text, size));
-    std::vector<std::string> tokens;
-    for (std::string word; words >> word;) tokens.push_back(word);
-    float points = 10;
-    if (!tokens.empty()) {
-        char *end;
-        const char *number = tokens.back().c_str();
-        float parsed = std::strtof(number, &end);
-        if (end != number && (!*end || std::string(end) == "px") && std::isfinite(parsed) && parsed > 0) {
-            points = *end ? parsed : parsed * 96 / 72;
-            tokens.pop_back();
-        }
-    }
-    int weight = SkFontStyle::kNormal_Weight;
-    auto slant = SkFontStyle::kUpright_Slant;
-    while (!tokens.empty()) {
-        const auto& suffix = tokens.back();
-        if (suffix == "Bold") weight = SkFontStyle::kBold_Weight;
-        else if (suffix == "Italic") slant = SkFontStyle::kItalic_Slant;
-        else if (suffix == "Oblique") slant = SkFontStyle::kOblique_Slant;
-        else if (suffix != "Regular" && suffix != "Normal") break;
-        tokens.pop_back();
-    }
-    std::string family;
-    for (const auto& token : tokens) {
-        if (!family.empty()) family += ' ';
-        family += token;
-    }
-    if (family.empty() || family == "Sans") family = "Helvetica";
-    else if (family == "Serif") family = "Times";
-    else if (family == "Monospace") family = "Menlo";
-    style.setFontFamilies({SkString(family.c_str())});
-    style.setFontStyle(SkFontStyle(weight, SkFontStyle::kNormal_Width, slant));
-    style.setFontSize(points);
-}
-
-static std::unique_ptr<Paragraph> paragraph(Backend& b, const char *text, size_t size) {
-    ParagraphStyle style;
-    TextStyle font = b.style.text;
-    font.setForegroundPaint(b.style.fill);
-    style.setTextStyle(font);
-    auto builder = ParagraphBuilder::make(style, b.fonts, b.unicode);
-    builder->addText(text, size);
-    auto result = builder->Build();
-    result->layout(SK_ScalarInfinity);
-    return result;
-}
-
 static SkPath localPath(Backend& b, SkCanvas& canvas) {
     SkMatrix inverse;
     if (!canvas.getTotalMatrix().invert(&inverse)) return SkPath();
     return b.path.snapshot().makeTransform(inverse);
 }
 
-static void skia_draw(void *backend, unsigned op, const double *v, uint32_t rgba,
+static void clip(Backend& backend, SkCanvas& canvas, const SkPath& path) {
+    canvas.clipPath(path, SkClipOp::kIntersect, true);
+    auto intersection = Op(backend.style.clip, path.makeTransform(canvas.getTotalMatrix()),
+                           kIntersect_SkPathOp);
+    if (intersection) backend.style.clip = std::move(*intersection);
+    else backend.style.clip = SkPath::Rect(SkRect::Make(canvas.getDeviceClipBounds()));
+}
+
+static void skia_draw(void *backend, DrawOperation op, const double *v, uint32_t rgba,
                            const char *text, uint32_t size, void *image) {
     auto& b = *static_cast<Backend *>(backend);
     auto& canvas = *b.surface->getCanvas();
@@ -194,76 +142,72 @@ static void skia_draw(void *backend, unsigned op, const double *v, uint32_t rgba
         return canvas.getTotalMatrix().mapPoint({(float)v[i], (float)v[i + 1]});
     };
     switch (op) {
-        case 1: case 2: {
-            auto& paint = op == 1 ? style.fill : style.stroke;
+        case DRAW_SET_FILL_COLOR: case DRAW_SET_STROKE_COLOR: {
+            auto& paint = op == DRAW_SET_FILL_COLOR ? style.fill : style.stroke;
             paint.setShader(nullptr);
             paint.setColor(color(rgba));
             break;
         }
-        case 3: case 4: case 5: case 18: case 23: case 24: {
+        case DRAW_FILL_RECT: case DRAW_STROKE_RECT: case DRAW_CLEAR_RECT: case DRAW_ADD_RECT: case DRAW_IMAGE: case DRAW_CLIP_RECT: {
+            if (op == DRAW_ADD_RECT && (!v[2] || !v[3])) break;
             auto rect = SkRect::MakeXYWH(v[0], v[1], v[2], v[3]);
             rect.sort();
-            if (op == 3 || op == 4) canvas.drawRect(rect, op == 3 ? style.fill : style.stroke);
-            else if (op == 5) {
+            if (op == DRAW_FILL_RECT || op == DRAW_STROKE_RECT) canvas.drawRect(rect, op == DRAW_FILL_RECT ? style.fill : style.stroke);
+            else if (op == DRAW_CLEAR_RECT) {
                 SkPaint clear;
                 clear.setAntiAlias(style.fill.isAntiAlias());
                 clear.setBlendMode(SkBlendMode::kClear);
                 canvas.drawRect(rect, clear);
-            } else if (op == 18) {
-                b.path.addPath(SkPath::Rect(rect), canvas.getTotalMatrix());
-            } else if (op == 23) {
+            } else if (op == DRAW_ADD_RECT) {
+                auto direction = (v[2] < 0) != (v[3] < 0)
+                    ? SkPathDirection::kCCW : SkPathDirection::kCW;
+                b.path.addPath(SkPath::Rect(rect, direction), canvas.getTotalMatrix());
+            } else if (op == DRAW_IMAGE) {
                 canvas.drawImageRect(*static_cast<sk_sp<SkImage> *>(image), rect,
                                      SkSamplingOptions(SkFilterMode::kLinear));
-            } else canvas.clipRect(rect, SkClipOp::kIntersect, true);
+            } else clip(b, canvas, SkPath::Rect(rect));
             break;
         }
-        case 6: b.path.reset(); break;
-        case 7: b.path.moveTo(point(0)); break;
-        case 8:
+        case DRAW_BEGIN_PATH: b.path.reset(); break;
+        case DRAW_MOVE_TO: b.path.moveTo(point(0)); break;
+        case DRAW_LINE_TO:
             if (b.path.isEmpty()) b.path.moveTo(point(0));
             else b.path.lineTo(point(0));
             break;
-        case 9: b.path.close(); break;
-        case 10: case 11: canvas.drawPath(localPath(b, canvas), op == 10 ? style.fill : style.stroke); break;
-        case 12: b.stack.push_back(style); canvas.save(); break;
-        case 13:
+        case DRAW_CLOSE_PATH: b.path.close(); break;
+        case DRAW_FILL_PATH: case DRAW_STROKE_PATH: canvas.drawPath(localPath(b, canvas), op == DRAW_FILL_PATH ? style.fill : style.stroke); break;
+        case DRAW_SAVE: b.stack.push_back(style); canvas.save(); break;
+        case DRAW_RESTORE:
             if (!b.stack.empty()) {
                 style = std::move(b.stack.back());
                 b.stack.pop_back();
                 canvas.restore();
             }
             break;
-        case 14: canvas.translate(v[0], v[1]); break;
-        case 15: if (v[0] && v[1]) canvas.scale(v[0], v[1]); break;
-        case 16: canvas.rotate(v[0] * 180 / 3.141592653589793); break;
-        case 17: if (v[0] > 0) style.stroke.setStrokeWidth(v[0]); break;
-        case 19: canvas.clipPath(localPath(b, canvas), SkClipOp::kIntersect, true); break;
-        case 20:
+        case DRAW_TRANSLATE: canvas.translate(v[0], v[1]); break;
+        case DRAW_SCALE: if (v[0] && v[1]) canvas.scale(v[0], v[1]); break;
+        case DRAW_ROTATE: canvas.rotate(v[0] * 180 / 3.141592653589793); break;
+        case DRAW_SET_LINE_WIDTH: if (v[0] > 0) style.stroke.setStrokeWidth(v[0]); break;
+        case DRAW_CLIP_PATH: clip(b, canvas, localPath(b, canvas)); break;
+        case DRAW_CUBIC_TO:
             if (b.path.isEmpty()) b.path.moveTo(point(0));
             b.path.cubicTo(point(0), point(2), point(4));
             break;
-        case 21: setFont(style.text, text, size); break;
-        case 22:
-            if (size) {
-                auto layout = paragraph(b, text, size);
-                layout->paint(&canvas, v[0], v[1] - layout->getAlphabeticBaseline());
-            }
+        case DRAW_SET_FONT: SkiaText::setFont(style.font, text, size); break;
+        case DRAW_FILL_TEXT:
+            b.text.draw(canvas, style.font, style.fill, text, size, v[0], v[1]);
             break;
+        default: break;
     }
 }
 
-static void skia_gradient(void *backend, unsigned op, const double *v,
-                               uint32_t count, const unsigned char *data) {
+static void skia_gradient(void *backend, DrawOperation op, const double *v,
+                               uint32_t count, const GradientStop *data) {
     auto& style = static_cast<Backend *>(backend)->style;
-    auto& paint = op == 26 || op == 28 ? style.stroke : style.fill;
+    auto& paint = op == DRAW_SET_STROKE_LINEAR || op == DRAW_SET_STROKE_RADIAL ? style.stroke : style.fill;
     std::vector<std::pair<float, SkColor>> stops;
-    for (uint32_t i = 0; i < count; i++, data += 12) {
-        double offset;
-        uint32_t rgba;
-        memcpy(&offset, data, 8);
-        memcpy(&rgba, data + 8, 4);
-        stops.emplace_back(std::clamp(offset, 0., 1.), color(rgba));
-    }
+    for (uint32_t i = 0; i < count; ++i)
+        stops.emplace_back(data[i].offset, color(data[i].rgba));
     std::stable_sort(stops.begin(), stops.end(), [](auto a, auto b) { return a.first < b.first; });
     std::vector<SkColor> colors;
     std::vector<SkScalar> positions;
@@ -275,9 +219,9 @@ static void skia_gradient(void *backend, unsigned op, const double *v,
     paint.setColor(count ? colors.back() : SK_ColorTRANSPARENT);
     if (count < 2) return;
     SkPoint start{(float)v[0], (float)v[1]};
-    SkPoint end{(float)v[op < 27 ? 2 : 3], (float)v[op < 27 ? 3 : 4]};
+    SkPoint end{(float)v[op < DRAW_SET_FILL_RADIAL ? 2 : 3], (float)v[op < DRAW_SET_FILL_RADIAL ? 3 : 4]};
     SkPoint points[] = {start, end};
-    auto shader = op < 27
+    auto shader = op < DRAW_SET_FILL_RADIAL
         ? SkGradientShader::MakeLinear(points, colors.data(), positions.data(), count, SkTileMode::kClamp)
         : SkGradientShader::MakeTwoPointConical(start, v[2], end, v[5], colors.data(),
                                                positions.data(), count, SkTileMode::kClamp);
@@ -294,7 +238,7 @@ static void skia_extents(void *backend, int kind, double *out) {
     if (kind == 3) {
         SkMatrix inverse;
         if (canvas.getTotalMatrix().invert(&inverse))
-            bounds = inverse.mapRect(SkRect::Make(canvas.getDeviceClipBounds()));
+            bounds = b.style.clip.makeTransform(inverse).computeTightBounds();
     } else {
         auto path = localPath(b, canvas);
         if (kind == 2) path = skpathutils::FillPathWithPaint(path, b.style.stroke);
@@ -308,26 +252,14 @@ static void skia_extents(void *backend, int kind, double *out) {
     out[2] = bounds.right(); out[3] = bounds.bottom();
 }
 
-static void skia_measure(void *backend, const char *text, size_t size, double *out) {
-    auto layout = paragraph(*static_cast<Backend *>(backend), text, size);
-    float baseline = layout->getAlphabeticBaseline();
-    SkRect ink = SkRect::MakeEmpty();
-    layout->visit([&](int, const Paragraph::VisitorInfo *run) {
-        if (!run || !run->count) return;
-        std::vector<SkRect> glyphBounds(run->count);
-        run->font.getBounds({run->glyphs, static_cast<size_t>(run->count)}, glyphBounds, nullptr);
-        for (int i = 0; i < run->count; ++i) {
-            if (glyphBounds[i].isEmpty()) continue;
-            const auto point = run->origin + run->positions[i];
-            glyphBounds[i].offset(point.x(), point.y());
-            ink.join(glyphBounds[i]);
-        }
-    });
-    out[0] = layout->getMaxIntrinsicWidth();
-    out[1] = layout->getHeight();
-    out[2] = baseline;
-    out[3] = ink.left(); out[4] = ink.isEmpty() ? 0 : ink.top() - baseline;
-    out[5] = ink.width(); out[6] = ink.height();
+static void skia_measure(void *target, const char *text, size_t size, double *out) {
+    auto& backend = *static_cast<Backend *>(target);
+    backend.text.measure(backend.style.font, text, size, out);
+}
+
+static double caret_x(void *target, const char *text, size_t size, size_t byte_offset, size_t utf16_offset) {
+    auto& backend = *static_cast<Backend *>(target);
+    return backend.text.caretX(backend.style.font, text, size, byte_offset == size, utf16_offset);
 }
 
 static bool skia_png(void *backend, const char *path) {
@@ -371,7 +303,7 @@ static const char *renderer(void *target) {
 }
 
 static const char *draw(void *target, const DrawCommand *command) {
-    if (command->op >= 25 && command->op <= 28)
+    if (command->op >= DRAW_SET_FILL_LINEAR && command->op <= DRAW_SET_STROKE_RADIAL)
         skia_gradient(target, command->op, command->args, command->stop_count, command->stops);
     else
         skia_draw(target, command->op, command->args, command->rgba,
@@ -399,5 +331,5 @@ static const char *load_image(const char *path, int *size, void **out) {
 
 extern "C" const CanvasBackend skia_backend = {
     "skia", SDL_WINDOW_METAL, create, resize, skia_destroy, renderer, draw, nullptr,
-    present, write_png, extents, skia_measure, load_image, skia_destroy_image
+    present, write_png, extents, skia_measure, caret_x, load_image, skia_destroy_image
 };

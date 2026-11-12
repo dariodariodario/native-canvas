@@ -89,24 +89,9 @@ public final class ParadoxDemo {
                 return;
             }
             Controls controls = new Controls(demo, canvas.width(), canvas.height());
-            long start = System.nanoTime();
-            long previous = start;
-            DemoStats stats = new DemoStats(canvas);
-            canvas.setLiveResizeRedraw(() -> {
-                controls.ui.resize(canvas.width(), canvas.height());
-                controls.ui.draw(canvas);
-                stats.draw(canvas);
-            });
-            while (controls.ui.poll(canvas)) {
-                long now = System.nanoTime();
-                if (!demo.paused) controls.time += (now - previous) / 1e9 * demo.speed;
-                previous = now;
-                controls.ui.draw(canvas);
-                stats.draw(canvas);
-                canvas.present();
-                if (smoke && seconds(start) >= 1) return;
-                Thread.sleep(4);
-            }
+            AnimatedToolkitDemo.run(canvas, controls.ui, elapsed -> {
+                if (!demo.paused) controls.time += elapsed * demo.speed;
+            }, 4, smoke);
         }
     }
 
@@ -130,13 +115,13 @@ public final class ParadoxDemo {
             Column panel = new Column(14, 8)
                     .add(new Label("ENGINE CONTROLS").setFont("Sans Bold", 17).setColor(0x73e8dfff))
                     .add(pause).add(surge).add(fast)
-                    .add(density).add(adjustments(
+                    .add(density).add(AnimatedToolkitDemo.adjustmentButtons(
                             () -> demo.particleCount = Math.max(0, demo.particleCount - 600),
                             () -> demo.particleCount = Math.min(PARTICLES, demo.particleCount + 600), refresh))
-                    .add(speed).add(adjustments(
+                    .add(speed).add(AnimatedToolkitDemo.adjustmentButtons(
                             () -> demo.speed = Math.max(0.25, demo.speed - 0.25),
                             () -> demo.speed = Math.min(4, demo.speed + 0.25), refresh))
-                    .add(zoom).add(adjustments(
+                    .add(zoom).add(AnimatedToolkitDemo.adjustmentButtons(
                             () -> demo.zoom = Math.max(0.5, demo.zoom - 0.1),
                             () -> demo.zoom = Math.min(2, demo.zoom + 0.1), refresh))
                     .add(new Button("Reset", () -> {
@@ -176,14 +161,7 @@ public final class ParadoxDemo {
             ui = new Ui(root, width, height);
         }
 
-        private static Row adjustments(Runnable decrease, Runnable increase, Runnable refresh) {
-            return new Row(0, 8)
-                    .add(new Button("−", () -> { decrease.run(); refresh.run(); }), Track.FILL)
-                    .add(new Button("+", () -> { increase.run(); refresh.run(); }), Track.FILL);
-        }
     }
-
-    private static double seconds(long start) { return (System.nanoTime() - start) / 1e9; }
 
     private static double[] unit(double x, double y, double z) {
         double length = Math.sqrt(x * x + y * y + z * z);

@@ -13,6 +13,7 @@
 
     <properties>
         <native.build.type>Release</native.build.type>
+        <native.test.video.driver>dummy</native.test.video.driver>
     </properties>
 
     <dependencies>
@@ -37,7 +38,7 @@
                 <configuration>
                     <argLine>@{argLine} ${native.test.vm.options} -Djava.library.path="${project.build.directory}/native"</argLine>
                     <environmentVariables>
-                        <SDL_VIDEO_DRIVER>dummy</SDL_VIDEO_DRIVER>
+                        <SDL_VIDEO_DRIVER>${native.test.video.driver}</SDL_VIDEO_DRIVER>
                     </environmentVariables>
                     <systemPropertyVariables>
                         <native.skip>${native.skip}</native.skip>

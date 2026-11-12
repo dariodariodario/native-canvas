@@ -8,13 +8,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static nativecanvas.DrawCommandBuffer.*;
+
 /** Canvas-style drawing into a persistent backing store. Use on the window thread. */
 public final class Canvas implements AutoCloseable {
     static { System.loadLibrary("nativecanvas"); }
 
     private final Thread owner = Thread.currentThread();
-    private final ByteBuffer commands = ByteBuffer.allocateDirect(256 * 1024)
-            .order(ByteOrder.nativeOrder());
+    private final DrawCommandBuffer commands = new DrawCommandBuffer(this::checkOpen, this::flush);
     private final Set<Image> images = new HashSet<>();
     public enum Backend { CAIRO, SKIA }
 
@@ -46,7 +47,18 @@ public final class Canvas implements AutoCloseable {
     }
 
     private static Backend defaultBackend() {
-        return Backend.valueOf(System.getProperty("nativecanvas.backend", "skia").toUpperCase(java.util.Locale.ROOT));
+        String requested = System.getProperty("nativecanvas.backend");
+        if (requested != null) return Backend.valueOf(requested.toUpperCase(java.util.Locale.ROOT));
+        return isBackendAvailable(Backend.SKIA) ? Backend.SKIA : Backend.CAIRO;
+    }
+
+    /** Returns whether the JNI library was built with this backend. */
+    public static boolean isBackendAvailable(Backend backend) {
+        return hasBackend(backendName(backend));
+    }
+
+    private static String backendName(Backend backend) {
+        return backend.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     public Backend backend() { return backend; }
@@ -54,7 +66,7 @@ public final class Canvas implements AutoCloseable {
     private Canvas(byte[] title, int width, int height, boolean resizable, Backend backend) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid canvas size");
         this.backend = java.util.Objects.requireNonNull(backend);
-        handle = open(title, width, height, resizable, backend.name().toLowerCase(java.util.Locale.ROOT));
+        handle = open(title, width, height, resizable, backendName(backend));
         updateSize(logicalSize(handle));
     }
 
@@ -128,25 +140,9 @@ public final class Canvas implements AutoCloseable {
         if (handle == 0) throw new IllegalStateException("Canvas is closed");
     }
 
-    private void command(int opcode, int bytes) {
-        checkOpen();
-        if (commands.remaining() < bytes + 1) flush();
-        commands.put((byte) opcode);
-    }
-
-    private void point(int opcode, double x, double y) {
-        command(opcode, 16);
-        commands.putDouble(x).putDouble(y);
-    }
-
-    private void box(int opcode, double x, double y, double w, double h) {
-        command(opcode, 32);
-        commands.putDouble(x).putDouble(y).putDouble(w).putDouble(h);
-    }
-
     /** Colors use 0xRRGGBBAA. */
-    public void setFillStyle(int rgba) { command(1, 4); commands.putInt(rgba); }
-    public void setStrokeStyle(int rgba) { command(2, 4); commands.putInt(rgba); }
+    public void setFillStyle(int rgba) { commands.color(SET_FILL_COLOR, rgba); }
+    public void setStrokeStyle(int rgba) { commands.color(SET_STROKE_COLOR, rgba); }
     public static Gradient linearGradient(double x0, double y0, double x1, double y1) {
         return new Gradient(false, x0, y0, x1, y1);
     }
@@ -177,7 +173,7 @@ public final class Canvas implements AutoCloseable {
         }
     }
 
-    private static final class Stop {
+    static final class Stop {
         final double offset;
         final int rgba;
 
@@ -194,72 +190,57 @@ public final class Canvas implements AutoCloseable {
     public void setStrokeStyle(Gradient gradient) { gradientStyle(gradient, true); }
 
     private void gradientStyle(Gradient gradient, boolean stroke) {
-        int header = 4 + 8 * gradient.coordinates.length;
-        int count = gradient.stops.size();
-        if (count > (commands.capacity() - 1 - header) / 12)
-            throw new IllegalArgumentException("Too many gradient stops");
-        command(25 + (gradient.radial ? 2 : 0) + (stroke ? 1 : 0), header + count * 12);
-        for (double coordinate : gradient.coordinates) commands.putDouble(coordinate);
-        commands.putInt(count);
-        for (Stop stop : gradient.stops) commands.putDouble(stop.offset).putInt(stop.rgba);
+        int op = gradient.radial
+                ? (stroke ? SET_STROKE_RADIAL : SET_FILL_RADIAL)
+                : (stroke ? SET_STROKE_LINEAR : SET_FILL_LINEAR);
+        commands.gradient(op, gradient.coordinates, gradient.stops);
     }
 
-    public void fillRect(double x, double y, double w, double h) { box(3, x, y, w, h); }
-    public void strokeRect(double x, double y, double w, double h) { box(4, x, y, w, h); }
-    public void clearRect(double x, double y, double w, double h) { box(5, x, y, w, h); }
-    public void beginPath() { command(6, 0); }
-    public void moveTo(double x, double y) { point(7, x, y); }
-    public void lineTo(double x, double y) { point(8, x, y); }
-    public void closePath() { command(9, 0); }
-    public void fill() { command(10, 0); }
-    public void stroke() { command(11, 0); }
-    public void save() { command(12, 0); }
-    public void restore() { command(13, 0); }
-    public void translate(double x, double y) { point(14, x, y); }
+    public void fillRect(double x, double y, double w, double h) { commands.rectangle(FILL_RECT, x, y, w, h); }
+    public void strokeRect(double x, double y, double w, double h) { commands.rectangle(STROKE_RECT, x, y, w, h); }
+    public void clearRect(double x, double y, double w, double h) { commands.rectangle(CLEAR_RECT, x, y, w, h); }
+    public void beginPath() { commands.opcode(BEGIN_PATH); }
+    public void moveTo(double x, double y) { commands.point(MOVE_TO, x, y); }
+    public void lineTo(double x, double y) { commands.point(LINE_TO, x, y); }
+    public void closePath() { commands.opcode(CLOSE_PATH); }
+    public void fill() { commands.opcode(FILL_PATH); }
+    public void stroke() { commands.opcode(STROKE_PATH); }
+    public void save() { commands.opcode(SAVE); }
+    public void restore() { commands.opcode(RESTORE); }
+    public void translate(double x, double y) { commands.point(TRANSLATE, x, y); }
     public void scale(double x, double y) {
         if (!Double.isFinite(x) || !Double.isFinite(y) || x == 0 || y == 0) return;
-        point(15, x, y);
+        commands.point(SCALE, x, y);
     }
-    public void rotate(double radians) { command(16, 8); commands.putDouble(radians); }
+    public void rotate(double radians) { commands.scalar(ROTATE, radians); }
     public enum Antialias { DEFAULT, FAST }
 
     /** Selects geometric edge quality. FAST prioritizes rasterization throughput. */
     public void setAntialias(Antialias quality) {
         java.util.Objects.requireNonNull(quality);
-        command(29, 8);
-        commands.putDouble(quality == Antialias.FAST ? 1 : 0);
+        commands.scalar(SET_ANTIALIAS, quality == Antialias.FAST ? 1 : 0);
     }
 
     public void setLineWidth(double width) {
-        if (width > 0 && Double.isFinite(width)) { command(17, 8); commands.putDouble(width); }
+        if (width > 0 && Double.isFinite(width)) commands.scalar(SET_LINE_WIDTH, width);
     }
-    public void rect(double x, double y, double w, double h) { box(18, x, y, w, h); }
-    public void clip() { command(19, 0); }
+    public void rect(double x, double y, double w, double h) { commands.rectangle(ADD_RECT, x, y, w, h); }
+    public void clip() { commands.opcode(CLIP_PATH); }
 
     /** Intersects the clip with a rectangle while preserving the current path. */
     public void clipRect(double x, double y, double width, double height) {
-        box(24, x, y, width, height);
+        commands.rectangle(CLIP_RECT, x, y, width, height);
     }
     public void bezierCurveTo(double x1, double y1, double x2, double y2, double x, double y) {
-        command(20, 48);
-        commands.putDouble(x1).putDouble(y1).putDouble(x2).putDouble(y2).putDouble(x).putDouble(y);
-    }
-
-    private void stringCommand(int opcode, String value, int extraBytes) {
-        byte[] bytes = utf8(value);
-        if (bytes.length > commands.capacity() - 5 - extraBytes)
-            throw new IllegalArgumentException("String exceeds command buffer");
-        command(opcode, 4 + bytes.length + extraBytes);
-        commands.putInt(bytes.length).put(bytes);
+        commands.cubic(x1, y1, x2, y2, x, y);
     }
 
     /** Sets a font description, for example "Sans Bold 18px". */
-    public void setFont(String description) { stringCommand(21, description, 0); }
+    public void setFont(String description) { commands.font(description); }
 
     /** Draws text at the specified alphabetic baseline. */
     public void fillText(String text, double x, double y) {
-        stringCommand(22, text, 16);
-        commands.putDouble(x).putDouble(y);
+        commands.text(text, x, y);
     }
 
     /** Geometric bounds of the current path in current user coordinates. */
@@ -301,6 +282,18 @@ public final class Canvas implements AutoCloseable {
         return new TextMetrics(metrics);
     }
 
+    /** Returns the shaped horizontal caret position for a UTF-16 index in a single line. */
+    public double textCaretX(String text, int index) {
+        if (index < 0 || index > text.length()
+                || (index > 0 && index < text.length() && Character.isSurrogatePair(
+                        text.charAt(index - 1), text.charAt(index))))
+            throw new IllegalArgumentException("Invalid text caret index");
+        byte[] bytes = utf8(text);
+        int byteOffset = index == text.length() ? bytes.length : utf8(text.substring(0, index)).length;
+        flush();
+        return caretPosition(handle, bytes, byteOffset, index);
+    }
+
     public static final class TextMetrics {
         public final double width;
         public final double height;
@@ -332,8 +325,7 @@ public final class Canvas implements AutoCloseable {
     public void drawImage(Image image, double x, double y, double width, double height) {
         checkOpen();
         if (!images.contains(image)) throw new IllegalArgumentException("Image is closed or belongs to another canvas");
-        command(23, 40);
-        commands.putLong(image.handle).putDouble(x).putDouble(y).putDouble(width).putDouble(height);
+        commands.image(image.handle, x, y, width, height);
     }
 
     public final class Image implements AutoCloseable {
@@ -377,10 +369,9 @@ public final class Canvas implements AutoCloseable {
     /** Submits pending commands without presenting. */
     public void flush() {
         checkOpen();
-        int length = commands.position();
+        int length = commands.size();
         if (length == 0) return;
-        commands.clear();
-        draw(handle, commands, length);
+        draw(handle, commands.take(), length);
     }
 
     /** Returns false after the user requests that the window close. */
@@ -469,6 +460,7 @@ public final class Canvas implements AutoCloseable {
         }
     }
 
+    private static native boolean hasBackend(String backendName);
     private static native String rendererName(long handle);
     private static native long open(byte[] title, int width, int height, boolean resizable, String backendName);
     private static native long logicalSize(long handle);
@@ -483,6 +475,7 @@ public final class Canvas implements AutoCloseable {
     private static native void textInputEnabled(long handle, boolean enabled);
     private static native int nextEvent(long handle, ByteBuffer event);
     private static native void extents(long handle, int kind, double[] bounds);
+    private static native double caretPosition(long canvas, byte[] text, int byteOffset, int utf16Offset);
     private static native void measure(long handle, byte[] text, double[] metrics);
     private static native long loadPng(long canvas, byte[] filename, int[] size);
     private static native void destroyImage(long canvas, long image);

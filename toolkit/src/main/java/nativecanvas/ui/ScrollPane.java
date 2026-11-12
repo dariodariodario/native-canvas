@@ -42,15 +42,12 @@ public final class ScrollPane extends Container {
             scrollBy(widget.y() + widget.height() - y() - height());
     }
 
-    @Override protected void paint(Canvas canvas) {
-        canvas.save();
-        canvas.clipRect(x(), y(), width(), height());
-        super.paint(canvas);
+    @Override protected void paintContents(Canvas canvas) {
+        super.paintContents(canvas);
         if (limit > 0 && height() > 0) {
             double thumb = Math.min(height(), Math.max(12, height() * height() / (limit + height())));
             canvas.setFillStyle(0x7a8ea6ff);
             canvas.fillRect(x() + width() - 5, y() + (height() - thumb) * scroll / limit, 3, thumb);
         }
-        canvas.restore();
     }
 }

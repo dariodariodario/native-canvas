@@ -28,6 +28,16 @@ public abstract class Container extends Widget {
     }
 
     @Override protected void paint(Canvas canvas) {
+        canvas.save();
+        try {
+            canvas.clipRect(x(), y(), width(), height());
+            paintContents(canvas);
+        } finally {
+            canvas.restore();
+        }
+    }
+
+    protected void paintContents(Canvas canvas) {
         for (Widget child : children) child.paint(canvas);
     }
 

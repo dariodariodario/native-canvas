@@ -71,7 +71,7 @@ public final class TextField extends Control {
         if (width() <= 20 || height() <= 6) return;
         canvas.save();
         canvas.clipRect(x() + 8, y() + 3, width() - 16, height() - 6);
-        double caretWidth = focused ? canvas.measureText(text.substring(0, caret)).width : 0;
+        double caretWidth = focused ? canvas.textCaretX(text, caret) : 0;
         double start = x() + 10 - Math.max(0, caretWidth - (width() - 21));
         canvas.setFillStyle(0xf3f6faff);
         canvas.fillText(text, start, y() + 24);
