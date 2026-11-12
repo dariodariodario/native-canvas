@@ -12,7 +12,7 @@ import static nativecanvas.DrawCommandBuffer.*;
 
 /** Canvas-style drawing into a persistent backing store. Use on the window thread. */
 public final class Canvas implements AutoCloseable {
-    static { System.loadLibrary("nativecanvas"); }
+    static { NativeLibrary.load(); }
 
     private final Thread owner = Thread.currentThread();
     private final DrawCommandBuffer commands = new DrawCommandBuffer(this::checkOpen, this::flush);

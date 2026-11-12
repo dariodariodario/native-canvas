@@ -89,4 +89,45 @@
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>native-bundle</id>
+            <properties>
+                <native.classifier>macos-aarch64</native.classifier>
+            </properties>
+            <build><plugins>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <executions><execution>
+                        <id>bundle-native-dependencies</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/scripts/bundle_macos.py</argument>
+                                <argument>${project.build.directory}/native/libnativecanvas.dylib</argument>
+                                <argument>${project.build.directory}/native-bundle/${native.classifier}/native/${native.classifier}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution></executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>3.5.0</version>
+                    <executions><execution>
+                        <id>native-bundle-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>jar</goal></goals>
+                        <configuration>
+                            <classesDirectory>${project.build.directory}/native-bundle/${native.classifier}</classesDirectory>
+                            <classifier>${native.classifier}</classifier>
+                        </configuration>
+                    </execution></executions>
+                </plugin>
+            </plugins></build>
+        </profile>
+    </profiles>
 </project>
