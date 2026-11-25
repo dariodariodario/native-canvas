@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.png" width="240" height="240" alt="Native Canvas logo, an asymmetrical violet and cyan trefoil knot">
+</p>
+
 # Native Canvas
 
 **Canvas-style 2D graphics for Java, powered by Skia and Cairo.**
